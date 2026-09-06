@@ -1,7 +1,7 @@
-import { useEffect, useState, useRef } from 'react';
-import { Bell, X, Clock, AlertCircle, Sparkles, CheckCircle2, Calendar } from 'lucide-react';
+import { useEffect, useState, useRef, useCallback } from 'react';
+import { Bell, X, Clock, AlertCircle, Sparkles, CheckCircle2, ChevronRight } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-import type { Notification, TimetableEvent, Homework, Task, TestExam, Routine, Workout } from '@/lib/types';
+import type { Notification, TimetableEvent, Homework, Task, TestExam, Workout } from '@/lib/types';
 
 interface NotificationPanelProps {
   open: boolean;
@@ -127,44 +127,139 @@ function NotificationIcon({ type }: { type: string }) {
   );
 }
 
-export function useSmartNotifications() {
-  const [unreadCount, setUnreadCount] = useState(0);
-  const lastCheckRef = useRef<Date | null>(null);
+interface ToastNotification {
+  id: string;
+  type: string;
+  title: string;
+  message: string;
+}
+
+export function NotificationToasts() {
+  const [toasts, setToasts] = useState<ToastNotification[]>([]);
+  const seenIdsRef = useRef<Set<string>>(new Set());
+
+  const dismissToast = useCallback((id: string) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
 
   useEffect(() => {
-    async function checkNotifications() {
+    async function checkForNewNotifications() {
+      const { data } = await supabase
+        .from('notifications')
+        .select('*')
+        .eq('is_read', false)
+        .order('created_at', { ascending: false })
+        .limit(5);
+
+      const notifs = (data as Notification[]) || [];
+      const newToasts: ToastNotification[] = [];
+      for (const n of notifs) {
+        if (!seenIdsRef.current.has(n.id)) {
+          seenIdsRef.current.add(n.id);
+          newToasts.push({ id: n.id, type: n.type, title: n.title, message: n.message });
+        }
+      }
+      if (newToasts.length > 0) {
+        setToasts((prev) => [...prev, ...newToasts]);
+      }
+    }
+
+    checkForNewNotifications();
+    const interval = setInterval(checkForNewNotifications, 15_000);
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    if (toasts.length === 0) return;
+    const timers = toasts.map((t) =>
+      setTimeout(() => dismissToast(t.id), 8000)
+    );
+    return () => timers.forEach(clearTimeout);
+  }, [toasts, dismissToast]);
+
+  if (toasts.length === 0) return null;
+
+  return (
+    <div className="fixed top-0 left-0 right-0 z-[60] flex flex-col items-center px-4 pt-4 md:pt-6 pointer-events-none">
+      <div className="w-full max-w-3xl space-y-2">
+        {toasts.map((toast) => (
+          <ToastBanner key={toast.id} toast={toast} onDismiss={() => dismissToast(toast.id)} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ToastBanner({ toast, onDismiss }: { toast: ToastNotification; onDismiss: () => void }) {
+  const iconMap: Record<string, { icon: typeof Bell; color: string; accent: string }> = {
+    important: { icon: AlertCircle, color: 'text-accent-warm', accent: 'border-accent-warm/25 bg-accent-warm/[0.08]' },
+    upcoming: { icon: Clock, color: 'text-sage-300', accent: 'border-sage-500/20 bg-sage-500/[0.06]' },
+    ai_intervention: { icon: Sparkles, color: 'text-accent-cool', accent: 'border-accent-cool/20 bg-accent-cool/[0.06]' },
+    summary: { icon: CheckCircle2, color: 'text-cream-dim', accent: 'border-white/[0.08] bg-white/[0.03]' },
+  };
+  const config = iconMap[toast.type] || iconMap.upcoming;
+  const Icon = config.icon;
+
+  return (
+    <div
+      className={`pointer-events-auto flex items-center gap-4 rounded-2xl border ${config.accent} backdrop-blur-xl px-5 py-4 shadow-2xl animate-slide-down`}
+    >
+      <div className="w-11 h-11 rounded-xl bg-white/[0.04] border border-white/[0.06] flex items-center justify-center shrink-0">
+        <Icon size={20} className={config.color} />
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-semibold text-cream">{toast.title}</p>
+        <p className="text-sm text-cream-muted mt-0.5 truncate">{toast.message}</p>
+      </div>
+      <button
+        onClick={onDismiss}
+        className="shrink-0 p-2 rounded-lg text-cream-dim hover:text-cream hover:bg-white/[0.06] transition-colors"
+        aria-label="Dismiss"
+      >
+        <X size={16} />
+      </button>
+    </div>
+  );
+}
+
+export function useSmartNotifications() {
+  const [unreadCount, setUnreadCount] = useState(0);
+  const lastGenRef = useRef<Date | null>(null);
+  const generatedKeysRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    async function checkUnread() {
       const { count } = await supabase
         .from('notifications')
         .select('*', { count: 'exact', head: true })
         .eq('is_read', false);
       setUnreadCount(count || 0);
     }
-    checkNotifications();
-    const interval = setInterval(checkNotifications, 30_000);
+    checkUnread();
+    const interval = setInterval(checkUnread, 30_000);
     return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
     async function generateSmartNotifications() {
       const now = new Date();
-      if (lastCheckRef.current) {
-        const elapsed = now.getTime() - lastCheckRef.current.getTime();
-        if (elapsed < 60_000) return;
+      if (lastGenRef.current) {
+        const elapsed = now.getTime() - lastGenRef.current.getTime();
+        if (elapsed < 300_000) return;
       }
-      lastCheckRef.current = now;
+      lastGenRef.current = now;
 
       const todayKey = now.toISOString().split('T')[0];
       const dayOfWeek = now.getDay();
       const currentTime = now.toTimeString().slice(0, 5);
       const currentMinutes = now.getHours() * 60 + now.getMinutes();
 
-      const [eventsRes, hwRes, tasksRes, testsRes, workoutsRes, existingNotifsRes] = await Promise.all([
+      const [eventsRes, hwRes, tasksRes, testsRes, workoutsRes] = await Promise.all([
         supabase.from('timetable_events').select('*').eq('day_of_week', dayOfWeek).order('start_time'),
         supabase.from('homework').select('*').in('status', ['todo', 'in_progress']).order('due_date'),
         supabase.from('tasks').select('*').in('status', ['todo', 'in_progress']),
         supabase.from('tests_exams').select('*').eq('status', 'upcoming'),
         supabase.from('workouts').select('*').eq('scheduled_date', todayKey).eq('status', 'planned'),
-        supabase.from('notifications').select('*').gte('created_at', new Date(now.getTime() - 3600_000).toISOString()),
       ]);
 
       const events = (eventsRes.data as TimetableEvent[]) || [];
@@ -172,10 +267,8 @@ export function useSmartNotifications() {
       const tasks = (tasksRes.data as Task[]) || [];
       const tests = (testsRes.data as TestExam[]) || [];
       const workouts = (workoutsRes.data as Workout[]) || [];
-      const recentNotifs = (existingNotifsRes.data as Notification[]) || [];
 
-      const recentMessages = new Set(recentNotifs.map((n) => n.message));
-      const newNotifications: Array<{ type: string; title: string; message: string; scheduled_for: string }> = [];
+      const newNotifications: Array<{ type: string; title: string; message: string; dedupKey: string }> = [];
 
       const nextEvent = events.find((e) => e.start_time > currentTime);
       if (nextEvent) {
@@ -183,30 +276,16 @@ export function useSmartNotifications() {
         const eventMinutes = eh * 60 + em;
         const minutesUntil = eventMinutes - currentMinutes;
 
-        if (minutesUntil > 0 && minutesUntil <= 10 && minutesUntil > 5) {
-          const msg = `${nextEvent.title} starts in about 10 minutes${nextEvent.room ? ` in room ${nextEvent.room}` : ''}.`;
-          if (!recentMessages.has(msg)) {
-            newNotifications.push({ type: 'upcoming', title: 'Upcoming Event', message: msg, scheduled_for: now.toISOString() });
-          }
-        }
-
         if (minutesUntil > 0 && minutesUntil <= 5) {
-          const msg = `${nextEvent.title} starts in ${minutesUntil} minutes${nextEvent.room ? ` in room ${nextEvent.room}` : ''}!`;
-          if (!recentMessages.has(msg)) {
-            newNotifications.push({ type: 'important', title: 'Starting Soon', message: msg, scheduled_for: now.toISOString() });
-          }
-        }
-
-        const [prevEndH, prevEndM] = (events.find((e) => e.end_time <= currentTime)?.end_time || '00:00').split(':').map(Number);
-        const prevEndMinutes = prevEndH * 60 + prevEndM;
-        const gap = eventMinutes - prevEndMinutes;
-        if (gap > 0 && currentMinutes > prevEndMinutes && currentMinutes < eventMinutes && gap > 5) {
-          const minutesSincePrev = currentMinutes - prevEndMinutes;
-          if (minutesSincePrev > gap * 0.5 && minutesSincePrev < gap) {
-            const msg = `You're in a free period now. ${nextEvent.title} is at ${nextEvent.start_time}. You have about ${minutesUntil} minutes — good time for a quick task or homework.`;
-            if (!recentMessages.has(msg)) {
-              newNotifications.push({ type: 'ai_intervention', title: 'Free Period', message: msg, scheduled_for: now.toISOString() });
-            }
+          const key = `event-5min-${nextEvent.id}-${todayKey}`;
+          if (!generatedKeysRef.current.has(key)) {
+            generatedKeysRef.current.add(key);
+            newNotifications.push({
+              type: 'important',
+              title: 'Starting Soon',
+              message: `${nextEvent.title} starts in ${minutesUntil} minute${minutesUntil > 1 ? 's' : ''}${nextEvent.room ? ` · Room ${nextEvent.room}` : ''}`,
+              dedupKey: key,
+            });
           }
         }
       }
@@ -214,50 +293,42 @@ export function useSmartNotifications() {
       const currentEvent = events.find((e) => currentTime >= e.start_time && currentTime < e.end_time);
       if (currentEvent) {
         const [eh, em] = currentEvent.end_time.split(':').map(Number);
-        const endMinutes = eh * 60 + em;
-        const minutesUntilEnd = endMinutes - currentMinutes;
-        if (minutesUntilEnd > 0 && minutesUntilEnd <= 5) {
-          const msg = `${currentEvent.title} ends in ${minutesUntilEnd} minutes. Get ready for your next activity.`;
-          if (!recentMessages.has(msg)) {
-            newNotifications.push({ type: 'upcoming', title: 'Class Ending Soon', message: msg, scheduled_for: now.toISOString() });
+        const minutesUntilEnd = eh * 60 + em - currentMinutes;
+        if (minutesUntilEnd > 0 && minutesUntilEnd <= 3) {
+          const key = `event-ending-${currentEvent.id}-${todayKey}`;
+          if (!generatedKeysRef.current.has(key)) {
+            generatedKeysRef.current.add(key);
+            newNotifications.push({
+              type: 'upcoming',
+              title: 'Class Ending Soon',
+              message: `${currentEvent.title} ends in ${minutesUntilEnd} minutes — get ready for what's next.`,
+              dedupKey: key,
+            });
           }
         }
       }
 
+      const today = new Date(); today.setHours(0, 0, 0, 0);
       for (const hw of homework) {
-        const dueDate = new Date(hw.due_date);
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        dueDate.setHours(0, 0, 0, 0);
-        const daysUntil = Math.round((dueDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+        const d = new Date(hw.due_date + 'T00:00:00');
+        const daysUntil = Math.round((d.getTime() - today.getTime()) / 86400000);
         if (daysUntil === 0) {
-          const msg = `${hw.title} is due today! Make sure to complete it.`;
-          if (!recentMessages.has(msg)) {
-            newNotifications.push({ type: 'important', title: 'Due Today', message: msg, scheduled_for: now.toISOString() });
-          }
-        } else if (daysUntil === 1) {
-          const msg = `${hw.title} is due tomorrow. Have you started it yet?`;
-          if (!recentMessages.has(msg)) {
-            newNotifications.push({ type: 'upcoming', title: 'Due Tomorrow', message: msg, scheduled_for: now.toISOString() });
+          const key = `hw-today-${hw.id}-${todayKey}`;
+          if (!generatedKeysRef.current.has(key)) {
+            generatedKeysRef.current.add(key);
+            newNotifications.push({ type: 'important', title: 'Due Today', message: `${hw.title} is due today. Make sure to finish it.`, dedupKey: key });
           }
         }
       }
 
       for (const test of tests) {
-        const testDate = new Date(test.exam_date);
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        testDate.setHours(0, 0, 0, 0);
-        const daysUntil = Math.round((testDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
-        if (daysUntil === 2 && test.revision_progress < 50) {
-          const msg = `${test.title} is in 2 days and your revision is only ${test.revision_progress}% done. Time to focus!`;
-          if (!recentMessages.has(msg)) {
-            newNotifications.push({ type: 'important', title: 'Test Warning', message: msg, scheduled_for: now.toISOString() });
-          }
-        } else if (daysUntil === 1) {
-          const msg = `${test.title} is tomorrow. Make sure you've covered all topics: ${test.topics || 'all material'}.`;
-          if (!recentMessages.has(msg)) {
-            newNotifications.push({ type: 'important', title: 'Test Tomorrow', message: msg, scheduled_for: now.toISOString() });
+        const d = new Date(test.exam_date + 'T00:00:00');
+        const daysUntil = Math.round((d.getTime() - today.getTime()) / 86400000);
+        if (daysUntil === 1) {
+          const key = `test-tomorrow-${test.id}-${todayKey}`;
+          if (!generatedKeysRef.current.has(key)) {
+            generatedKeysRef.current.add(key);
+            newNotifications.push({ type: 'important', title: 'Test Tomorrow', message: `${test.title} is tomorrow — ${test.revision_progress}% revised so far.`, dedupKey: key });
           }
         }
       }
@@ -265,12 +336,12 @@ export function useSmartNotifications() {
       for (const workout of workouts) {
         if (workout.scheduled_time) {
           const [wh, wm] = workout.scheduled_time.split(':').map(Number);
-          const workoutMinutes = wh * 60 + wm;
-          const minutesUntil = workoutMinutes - currentMinutes;
-          if (minutesUntil > 0 && minutesUntil <= 15) {
-            const msg = `Your workout "${workout.title}" is scheduled in about ${minutesUntil} minutes.`;
-            if (!recentMessages.has(msg)) {
-              newNotifications.push({ type: 'upcoming', title: 'Workout Reminder', message: msg, scheduled_for: now.toISOString() });
+          const minutesUntil = wh * 60 + wm - currentMinutes;
+          if (minutesUntil > 0 && minutesUntil <= 10) {
+            const key = `workout-${workout.id}-${todayKey}`;
+            if (!generatedKeysRef.current.has(key)) {
+              generatedKeysRef.current.add(key);
+              newNotifications.push({ type: 'upcoming', title: 'Workout Soon', message: `Your workout "${workout.title}" starts in about ${minutesUntil} minutes.`, dedupKey: key });
             }
           }
         }
@@ -278,9 +349,10 @@ export function useSmartNotifications() {
 
       const highPriorityTasks = tasks.filter((t) => t.priority >= 4 && !t.due_date);
       if (highPriorityTasks.length > 0 && now.getHours() >= 16 && now.getHours() < 20) {
-        const msg = `You have ${highPriorityTasks.length} high-priority task(s) without a deadline. Consider scheduling time for them this evening.`;
-        if (!recentMessages.has(msg)) {
-          newNotifications.push({ type: 'ai_intervention', title: 'Task Reminder', message: msg, scheduled_for: now.toISOString() });
+        const key = `high-priority-tasks-${todayKey}`;
+        if (!generatedKeysRef.current.has(key)) {
+          generatedKeysRef.current.add(key);
+          newNotifications.push({ type: 'ai_intervention', title: 'Unscheduled Priorities', message: `You have ${highPriorityTasks.length} high-priority task${highPriorityTasks.length > 1 ? 's' : ''} without a deadline. Consider scheduling time this evening.`, dedupKey: key });
         }
       }
 
@@ -291,7 +363,7 @@ export function useSmartNotifications() {
           message: n.message,
           is_read: false,
           is_acted_upon: false,
-          scheduled_for: n.scheduled_for,
+          scheduled_for: now.toISOString(),
         }));
         await supabase.from('notifications').insert(inserts);
         setUnreadCount((prev) => prev + newNotifications.length);
@@ -299,7 +371,7 @@ export function useSmartNotifications() {
     }
 
     generateSmartNotifications();
-    const interval = setInterval(generateSmartNotifications, 60_000);
+    const interval = setInterval(generateSmartNotifications, 300_000);
     return () => clearInterval(interval);
   }, []);
 

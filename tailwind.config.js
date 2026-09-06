@@ -48,9 +48,9 @@ export default {
         },
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
-        display: ['Instrument Serif', 'Georgia', 'serif'],
-        mono: ['JetBrains Mono', 'ui-monospace', 'monospace'],
+        sans: ['Outfit', 'system-ui', '-apple-system', 'sans-serif'],
+        display: ['DM Serif Display', 'Georgia', 'serif'],
+        mono: ['DM Mono', 'ui-monospace', 'monospace'],
       },
       backdropBlur: {
         xs: '2px',
@@ -58,6 +58,7 @@ export default {
       animation: {
         'fade-in': 'fadeIn 0.4s ease-out',
         'slide-up': 'slideUp 0.3s ease-out',
+        'slide-down': 'slideDown 0.35s cubic-bezier(0.16, 1, 0.3, 1)',
         'glow-pulse': 'glowPulse 3s ease-in-out infinite',
         'light-sweep': 'lightSweep 2s ease-in-out',
       },
@@ -69,6 +70,10 @@ export default {
         slideUp: {
           '0%': { opacity: '0', transform: 'translateY(8px)' },
           '100%': { opacity: '1', transform: 'translateY(0)' },
+        },
+        slideDown: {
+          '0%': { opacity: '0', transform: 'translateY(-16px) scale(0.98)' },
+          '100%': { opacity: '1', transform: 'translateY(0) scale(1)' },
         },
         glowPulse: {
           '0%, 100%': { boxShadow: '0 0 12px rgba(139, 154, 107, 0.08)' },

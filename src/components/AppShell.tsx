@@ -8,7 +8,7 @@ import { Statistics } from '@/views/Statistics';
 import { More } from '@/views/More';
 import { QuickAddModal } from '@/components/QuickAddModal';
 import { AIChat, AIChatButton } from '@/components/AIChat';
-import { NotificationPanel, useSmartNotifications } from '@/components/Notifications';
+import { NotificationPanel, NotificationToasts, useSmartNotifications } from '@/components/Notifications';
 
 type View = 'home' | 'schedule' | 'tasks' | 'statistics' | 'more';
 
@@ -161,6 +161,9 @@ export function AppShell() {
 
       {/* AI Chat floating button */}
       <AIChatButton onClick={() => setChatOpen(true)} />
+
+      {/* Toast notification banners */}
+      <NotificationToasts />
 
       {/* Modals & overlays */}
       {quickAddOpen && <QuickAddModal onClose={() => setQuickAddOpen(false)} />}

@@ -8,6 +8,36 @@ interface AIChatProps {
   onClose: () => void;
 }
 
+function fmtTime(time: string): string {
+  const [h, m] = time.split(':').map(Number);
+  const suffix = h >= 12 ? 'PM' : 'AM';
+  const displayHour = h === 0 ? 12 : h > 12 ? h - 12 : h;
+  return `${displayHour}:${String(m).padStart(2, '0')} ${suffix}`;
+}
+
+function fmtDate(dateStr: string): string {
+  return new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
+function fmtDuration(min: number): string {
+  if (min < 60) return `${min} min`;
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
+
+interface ScheduleContext {
+  currentTime: string;
+  currentDate: string;
+  events: TimetableEvent[];
+  homework: Homework[];
+  tasks: Task[];
+  tests: TestExam[];
+  routines: Routine[];
+  currentEvent: TimetableEvent | null;
+  nextEvent: TimetableEvent | null;
+}
+
 export function AIChat({ open, onClose }: AIChatProps) {
   const [messages, setMessages] = useState<AIChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -35,9 +65,8 @@ export function AIChat({ open, onClose }: AIChatProps) {
     }
   }, [messages, thinking]);
 
-  async function generateContext(): Promise<string> {
+  async function gatherContext(): Promise<ScheduleContext> {
     const now = new Date();
-    const todayKey = now.toISOString().split('T')[0];
     const dayOfWeek = now.getDay();
     const currentTime = now.toTimeString().slice(0, 5);
 
@@ -55,116 +84,157 @@ export function AIChat({ open, onClose }: AIChatProps) {
     const tests = (testsRes.data as TestExam[]) || [];
     const routines = (routinesRes.data as Routine[]) || [];
 
-    const parts: string[] = [];
-    parts.push(`Current time: ${currentTime} on ${now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}`);
-
-    if (events.length > 0) {
-      parts.push(`Today's schedule: ${events.map((e) => `${e.start_time}-${e.end_time} ${e.title}`).join(', ')}`);
-    }
-
-    const currentEvent = events.find((e) => currentTime >= e.start_time && currentTime < e.end_time);
-    if (currentEvent) {
-      parts.push(`Currently in: ${currentEvent.title} (ends at ${currentEvent.end_time})`);
-    }
-
-    const nextEvent = events.find((e) => e.start_time > currentTime);
-    if (nextEvent) {
-      parts.push(`Next event: ${nextEvent.title} at ${nextEvent.start_time}`);
-    }
-
-    if (homework.length > 0) {
-      parts.push(`Pending homework: ${homework.map((h) => `${h.title} (due ${h.due_date})`).join('; ')}`);
-    }
-
-    if (tasks.length > 0) {
-      parts.push(`Pending tasks: ${tasks.map((t) => `${t.title} (priority ${t.priority})`).join('; ')}`);
-    }
-
-    if (tests.length > 0) {
-      parts.push(`Upcoming tests: ${tests.map((t) => `${t.title} on ${t.exam_date} (${t.revision_progress}% revised)`).join('; ')}`);
-    }
-
-    if (routines.length > 0) {
-      const todayRoutines = routines.filter((r) => r.applicable_days?.includes(dayOfWeek));
-      if (todayRoutines.length > 0) {
-        parts.push(`Today's routines: ${todayRoutines.map((r) => r.name).join(', ')}`);
-      }
-    }
-
-    return parts.join('\n');
+    return {
+      currentTime,
+      currentDate: now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }),
+      events,
+      homework,
+      tasks,
+      tests,
+      routines,
+      currentEvent: events.find((e) => currentTime >= e.start_time && currentTime < e.end_time) || null,
+      nextEvent: events.find((e) => e.start_time > currentTime) || null,
+    };
   }
 
-  function generateResponse(userMessage: string, context: string): string {
-    const lower = userMessage.toLowerCase();
-    const now = new Date();
-    const currentTime = now.toTimeString().slice(0, 5);
-    const hour = now.getHours();
+  function respond(userMessage: string, ctx: ScheduleContext): string {
+    const q = userMessage.toLowerCase().trim();
 
-    if (lower.includes('late') || lower.includes('running late') || lower.includes('behind')) {
-      return "Let me check what's coming up next. Based on your schedule, if you're running late, focus on getting to your next event as soon as possible. I can help you figure out what to deprioritise — any homework or tasks due today should take precedence over lower-priority items. Want me to look at what's due?";
+    if (/^(hi|hey|hello|yo|sup|good morning|good afternoon|good evening)\b/.test(q)) {
+      const greeting = ctx.currentEvent
+        ? `You're currently in ${ctx.currentEvent.title} — it ends at ${fmtTime(ctx.currentEvent.end_time)}.`
+        : ctx.nextEvent
+          ? `Your next thing is ${ctx.nextEvent.title} at ${fmtTime(ctx.nextEvent.start_time)}.`
+          : `Your schedule is clear right now.`;
+      return `Hey! ${greeting} What can I help you with?`;
     }
 
-    if (lower.includes('priorit') || lower.includes('what should i do') || lower.includes('focus')) {
-      const lines = context.split('\n');
-      const hwLine = lines.find((l) => l.includes('Pending homework'));
-      const taskLine = lines.find((l) => l.includes('Pending tasks'));
-      const testLine = lines.find((l) => l.includes('Upcoming tests'));
-      const nextLine = lines.find((l) => l.includes('Next event'));
-
-      const suggestions: string[] = [];
-      if (nextLine) suggestions.push(`Your next scheduled event is coming up — make sure you're ready for that first.`);
-      if (hwLine) suggestions.push(`You have homework due soon — tackle the most urgent one first.`);
-      if (testLine) suggestions.push(`You have an upcoming test — if revision progress is low, dedicate some time to studying.`);
-      if (taskLine) suggestions.push(`For tasks, start with the highest priority one.`);
-      if (suggestions.length === 0) return "You're all caught up! This is a good time to rest, review your goals, or get ahead on upcoming work.";
-      return `Here's what I'd suggest:\n\n${suggestions.map((s, i) => `${i + 1}. ${s}`).join('\n')}`;
+    if (q.includes('help') || q.includes('what can you do') || q.includes('what do you do')) {
+      return `Here's what I can help with:\n\n• Prioritise your tasks and homework\n• Plan revision for upcoming tests\n• Suggest what to do right now or during free periods\n• Check your schedule and routines\n• Give advice on sleep, workouts, and managing stress\n• Help when you're running late\n\nJust ask me naturally — like "what should I focus on?" or "am I running late?"`;
     }
 
-    if (lower.includes('sleep') || lower.includes('tired') || lower.includes('bedtime')) {
-      if (hour >= 21) return `It's ${currentTime} — if your target bedtime is coming up, start winding down soon. Reduce screen time and try to relax. A good night's sleep will make tomorrow much more productive.`;
-      return `Sleep is crucial for productivity and mood. Try to keep a consistent bedtime and avoid screens 30 minutes before bed. Your target bedtime is set in your Sleep & Lifestyle settings.`;
+    if (q.includes('late') || q.includes('running late') || q.includes('behind schedule') || q.includes('missed')) {
+      const parts: string[] = [];
+      if (ctx.currentEvent) {
+        parts.push(`Right now you should be in **${ctx.currentEvent.title}** (ends at ${fmtTime(ctx.currentEvent.end_time)}).`);
+      }
+      if (ctx.nextEvent) {
+        parts.push(`Your next event is **${ctx.nextEvent.title}** at ${fmtTime(ctx.nextEvent.start_time)}${ctx.nextEvent.room ? ` in room ${ctx.nextEvent.room}` : ''}.`);
+      }
+      if (ctx.homework.some((h) => h.due_date === new Date().toISOString().split('T')[0])) {
+        const dueToday = ctx.homework.filter((h) => h.due_date === new Date().toISOString().split('T')[0]);
+        parts.push(`You also have ${dueToday.length} homework item${dueToday.length > 1 ? 's' : ''} due today: ${dueToday.map((h) => h.title).join(', ')}.`);
+      }
+      if (parts.length === 0) return `You're not behind on anything — everything looks on track. Is there something specific you're worried about?`;
+      return `Don't panic. Here's the situation:\n\n${parts.join('\n')}\n\nFocus on getting to your next event. If homework is due today, use any free time you have between classes to knock it out.`;
     }
 
-    if (lower.includes('test') || lower.includes('exam') || lower.includes('revision') || lower.includes('study')) {
-      const testLine = context.split('\n').find((l) => l.includes('Upcoming tests'));
-      if (testLine) return `You have upcoming tests. ${testLine}. I'd recommend breaking your revision into focused sessions — 25 minutes of study with 5-minute breaks (Pomodoro). Prioritise the test that's closest or has the lowest revision progress.`;
-      return "No upcoming tests right now. You're in good shape! When tests do come up, I'll help you plan your revision schedule.";
+    if (q.includes('priorit') || q.includes('what should i do') || q.includes('what to do') || q.includes('focus') || q.includes('next')) {
+      const tips: string[] = [];
+      if (ctx.currentEvent) {
+        tips.push(`You're in ${ctx.currentEvent.title} right now — stay focused until it ends at ${fmtTime(ctx.currentEvent.end_time)}.`);
+      }
+      if (ctx.nextEvent) {
+        const [nh, nm] = ctx.nextEvent.start_time.split(':').map(Number);
+        const nowMin = parseInt(ctx.currentTime.slice(0, 2)) * 60 + parseInt(ctx.currentTime.slice(3, 5));
+        const gap = nh * 60 + nm - nowMin;
+        if (gap > 15 && !ctx.currentEvent) {
+          tips.push(`You have about ${fmtDuration(gap)} until ${ctx.nextEvent.title} at ${fmtTime(ctx.nextEvent.start_time)}. Good window for a quick task.`);
+        } else if (gap > 0) {
+          tips.push(`Next up: ${ctx.nextEvent.title} at ${fmtTime(ctx.nextEvent.start_time)}${ctx.nextEvent.room ? ` in room ${ctx.nextEvent.room}` : ''}.`);
+        }
+      }
+      const dueToday = ctx.homework.filter((h) => h.due_date === new Date().toISOString().split('T')[0]);
+      if (dueToday.length > 0) {
+        tips.push(`${dueToday.length} homework due today — ${dueToday.map((h) => h.title).join(', ')}. Do these first.`);
+      }
+      const dueTomorrow = ctx.homework.filter((h) => {
+        const d = new Date(h.due_date + 'T00:00:00');
+        const today = new Date(); today.setHours(0, 0, 0, 0);
+        return Math.round((d.getTime() - today.getTime()) / 86400000) === 1;
+      });
+      if (dueTomorrow.length > 0) {
+        tips.push(`${dueTomorrow.length} due tomorrow: ${dueTomorrow.map((h) => h.title).join(', ')}.`);
+      }
+      if (ctx.tests.length > 0) {
+        const closest = ctx.tests[0];
+        const d = new Date(closest.exam_date + 'T00:00:00');
+        const today = new Date(); today.setHours(0, 0, 0, 0);
+        const days = Math.round((d.getTime() - today.getTime()) / 86400000);
+        if (days <= 3) {
+          tips.push(`${closest.title} is ${days === 0 ? 'today' : days === 1 ? 'tomorrow' : `in ${days} days`} — revision is at ${closest.revision_progress}%.`);
+        }
+      }
+      if (ctx.tasks.length > 0 && tips.length < 4) {
+        const top = ctx.tasks[0];
+        tips.push(`Highest priority task: ${top.title}.`);
+      }
+      if (tips.length === 0) return `You're all caught up. Nothing urgent on your plate — this is a great time to rest, review your goals, or get ahead on upcoming work.`;
+      return `Here's what I'd focus on:\n\n${tips.map((t, i) => `${i + 1}. ${t}`).join('\n')}`;
     }
 
-    if (lower.includes('workout') || lower.includes('exercise') || lower.includes('gym')) {
-      return "Regular exercise boosts energy, mood, and focus. Check your Health & Wellness tab for scheduled workouts — if you've set up recurring workouts, they'll appear automatically each week. Even a short workout is better than skipping entirely.";
+    if (q.includes('schedule') || q.includes('today') || q.includes('what\'s on') || q.includes("what's on")) {
+      if (ctx.events.length === 0) return `Nothing scheduled for today. Enjoy the open day!`;
+      const lines = ctx.events.map((e) => `${fmtTime(e.start_time)} — ${fmtTime(e.end_time)}  ${e.title}${e.room ? ` (room ${e.room})` : ''}`);
+      return `Here's your day:\n\n${lines.join('\n')}`;
     }
 
-    if (lower.includes('routine') || lower.includes('morning') || lower.includes('evening')) {
-      const routineLine = context.split('\n').find((l) => l.includes("Today's routines"));
-      if (routineLine) return `Your routines for today: ${routineLine}. Routines help build consistency — try to follow them even on busy days, even if you need to shorten them.`;
-      return "You don't have any active routines for today. Consider setting up morning and evening routines in your Routines settings to build better habits.";
+    if (q.includes('homework') || q.includes('hw') || q.includes('assignment')) {
+      if (ctx.homework.length === 0) return `No pending homework. You're all clear!`;
+      const lines = ctx.homework.map((h) => `• ${h.title} — due ${fmtDate(h.due_date)}${h.subject_id ? '' : ''}`);
+      return `You have ${ctx.homework.length} homework item${ctx.homework.length > 1 ? 's' : ''} pending:\n\n${lines.join('\n')}\n\n${ctx.homework[0] ? `I'd start with **${ctx.homework[0].title}** — it's the most urgent.` : ''}`;
     }
 
-    if (lower.includes('hello') || lower.includes('hi') || lower.includes('hey')) {
-      return `Hello! I'm your AI assistant. I can help you with prioritising tasks, managing your schedule, tracking homework and tests, and staying on top of your routines. What's on your mind?`;
+    if (q.includes('test') || q.includes('exam') || q.includes('revision') || q.includes('study')) {
+      if (ctx.tests.length === 0) return `No upcoming tests. You're in good shape — I'll let you know when one comes up.`;
+      const lines = ctx.tests.map((t) => {
+        const d = new Date(t.exam_date + 'T00:00:00');
+        const today = new Date(); today.setHours(0, 0, 0, 0);
+        const days = Math.round((d.getTime() - today.getTime()) / 86400000);
+        const when = days === 0 ? 'today' : days === 1 ? 'tomorrow' : `in ${days} days (${fmtDate(t.exam_date)})`;
+        return `• ${t.title} — ${when} · ${t.revision_progress}% revised`;
+      });
+      const closest = ctx.tests[0];
+      return `Upcoming tests:\n\n${lines.join('\n')}\n\nI'd prioritise **${closest.title}** — break revision into 25-minute focused sessions with short breaks. Focus on the topics you're least confident on first.`;
     }
 
-    if (lower.includes('help') || lower.includes('what can you do')) {
-      return `I can help you with:\n\n• Prioritising tasks and homework\n• Planning your study schedule for upcoming tests\n• Managing your daily routine\n• Advice on sleep, exercise, and productivity\n• Figuring out what to do next when you're running late\n\nJust ask me anything about your day or your goals!`;
+    if (q.includes('sleep') || q.includes('tired') || q.includes('bedtime') || q.includes('rest')) {
+      const hour = parseInt(ctx.currentTime.slice(0, 2));
+      if (hour >= 21) return `It's ${fmtTime(ctx.currentTime)} — getting close to bedtime. Start winding down: dim the lights, put away screens, and give yourself 20-30 minutes to relax. Tomorrow will be much easier with proper rest.`;
+      if (hour < 7) return `It's ${fmtTime(ctx.currentTime)} — still early. If you woke up naturally, great. If not, try to get a bit more rest if you can.`;
+      return `Sleep is the foundation of everything else. Try to keep a consistent bedtime, avoid screens 30 minutes before bed, and aim for 7-8 hours. You can set your target bedtime in your settings.`;
     }
 
-    if (lower.includes('stress') || lower.includes('overwhelm') || lower.includes('anxious')) {
-      return "It sounds like you've got a lot going on. Let's break it down: what's the most urgent thing right now? Focus on one thing at a time — you don't have to do everything today. If you're feeling overwhelmed, taking a short break or a walk can help reset your focus.";
+    if (q.includes('workout') || q.includes('exercise') || q.includes('gym') || q.includes('training')) {
+      return `Movement is one of the best things you can do for focus and mood. Check the Health & Wellness tab for your scheduled workouts — if you've set up recurring ones, they'll show up automatically each week. Even 20 minutes is better than skipping entirely.`;
     }
 
-    const contextLines = context.split('\n');
-    const summary: string[] = [];
-    const nextLine = contextLines.find((l) => l.includes('Next event'));
-    const hwLine = contextLines.find((l) => l.includes('Pending homework'));
-    if (nextLine) summary.push(nextLine);
-    if (hwLine) summary.push(hwLine);
-
-    if (summary.length > 0) {
-      return `Here's a quick snapshot:\n\n${summary.join('\n')}\n\nIs there something specific you'd like help with? I can help you prioritise, plan your revision, or figure out what to do next.`;
+    if (q.includes('routine') || q.includes('morning') || q.includes('evening')) {
+      const todayRoutines = ctx.routines.filter((r) => r.applicable_days?.includes(new Date().getDay()));
+      if (todayRoutines.length === 0) return `No active routines for today. You can set up morning and evening routines in your settings to build consistency.`;
+      const lines = todayRoutines.map((r) => `• ${r.name}${r.start_time ? ` at ${fmtTime(r.start_time)}` : ''}`);
+      return `Here are your routines for today:\n\n${lines.join('\n')}\n\nRoutines work best when you follow them even on busy days — even a shortened version keeps the habit.`;
     }
 
-    return `I'm here to help! I can see your schedule, homework, tasks, tests, and routines. Ask me about prioritising your day, planning for tests, managing your routine, or what to do when you're running late. What would you like to know?`;
+    if (q.includes('stress') || q.includes('overwhelm') || q.includes('anxious') || q.includes('anxiety') || q.includes('pressure')) {
+      return `Take a breath. You don't have to do everything at once.\n\nHere's what helps: pick one thing — the smallest, most urgent task — and do just that. Everything else can wait 10 minutes while you reset. A short walk or some water can help too.\n\nWant me to help you pick the one thing to focus on?`;
+    }
+
+    if (q.includes('task') || q.includes('todo') || q.includes('to-do')) {
+      if (ctx.tasks.length === 0) return `No pending tasks. You're all caught up!`;
+      const lines = ctx.tasks.slice(0, 5).map((t) => `• ${t.title}${t.priority >= 4 ? ' (high priority)' : ''}${t.due_date ? ` — due ${fmtDate(t.due_date)}` : ''}`);
+      return `Here are your top tasks:\n\n${lines.join('\n')}${ctx.tasks.length > 5 ? `\n\n...and ${ctx.tasks.length - 5} more.` : ''}`;
+    }
+
+    const snapshot: string[] = [];
+    if (ctx.currentEvent) snapshot.push(`Right now: ${ctx.currentEvent.title} (until ${fmtTime(ctx.currentEvent.end_time)})`);
+    if (ctx.nextEvent) snapshot.push(`Next: ${ctx.nextEvent.title} at ${fmtTime(ctx.nextEvent.start_time)}`);
+    if (ctx.homework.length > 0) snapshot.push(`${ctx.homework.length} homework pending`);
+    if (ctx.tests.length > 0) snapshot.push(`${ctx.tests.length} upcoming test${ctx.tests.length > 1 ? 's' : ''}`);
+    if (snapshot.length > 0) {
+      return `Here's a quick snapshot of your day:\n\n${snapshot.map((s) => `• ${s}`).join('\n')}\n\nAsk me to prioritise, check your homework, plan for a test, or help when you're running late.`;
+    }
+    return `I'm your personal assistant — I can see your schedule, homework, tasks, tests, and routines. Try asking me:\n\n• "What should I focus on?"\n• "Do I have any homework?"\n• "When's my next test?"\n• "Am I running late?"`;
   }
 
   async function handleSend() {
@@ -179,33 +249,41 @@ export function AIChat({ open, onClose }: AIChatProps) {
         .insert({ role: 'user', content: userMessage })
         .select('*')
         .single();
+      if (savedUser) setMessages((prev) => [...prev, savedUser as AIChatMessage]);
 
-      if (savedUser) {
-        setMessages((prev) => [...prev, savedUser as AIChatMessage]);
-      }
-
-      const context = await generateContext();
-      const response = generateResponse(userMessage, context);
+      const ctx = await gatherContext();
+      const response = respond(userMessage, ctx);
 
       const { data: savedAssistant } = await supabase
         .from('ai_chat_messages')
         .insert({ role: 'assistant', content: response })
         .select('*')
         .single();
-
-      if (savedAssistant) {
-        setMessages((prev) => [...prev, savedAssistant as AIChatMessage]);
-      }
+      if (savedAssistant) setMessages((prev) => [...prev, savedAssistant as AIChatMessage]);
     } catch {
-      // If save fails, still show the response locally
       setMessages((prev) => [
         ...prev,
         { id: 'temp-u', user_id: '', role: 'user', content: userMessage, created_at: new Date().toISOString() },
-        { id: 'temp-a', user_id: '', role: 'assistant', content: 'Sorry, I had trouble processing that. Please try again.', created_at: new Date().toISOString() },
+        { id: 'temp-a', user_id: '', role: 'assistant', content: 'Sorry, something went wrong. Please try again.', created_at: new Date().toISOString() },
       ]);
     } finally {
       setThinking(false);
     }
+  }
+
+  function renderContent(text: string) {
+    return text.split('\n').map((line, i) => {
+      const boldMatch = line.match(/\*\*(.+?)\*\*/);
+      if (boldMatch) {
+        const parts = line.split(/\*\*(.+?)\*\*/);
+        return (
+          <p key={i} className={i > 0 ? 'mt-1' : ''}>
+            {parts.map((part, j) => j % 2 === 1 ? <span key={j} className="font-semibold text-cream">{part}</span> : <span key={j}>{part}</span>)}
+          </p>
+        );
+      }
+      return <p key={i} className={i > 0 ? 'mt-1' : ''}>{line || '\u00A0'}</p>;
+    });
   }
 
   if (!open) return null;
@@ -213,18 +291,17 @@ export function AIChat({ open, onClose }: AIChatProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center bg-charcoal-950/70 backdrop-blur-sm animate-fade-in" onClick={onClose}>
       <div
-        className="glass-card w-full md:max-w-lg h-[80vh] md:h-[600px] flex flex-col rounded-t-2xl md:rounded-2xl animate-slide-up overflow-hidden"
+        className="glass-card w-full md:max-w-lg h-[80vh] md:h-[620px] flex flex-col rounded-t-2xl md:rounded-2xl animate-slide-up overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.06]">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-sage-500/10 border border-sage-500/20 flex items-center justify-center">
-              <Sparkles size={16} className="text-sage-300" />
+            <div className="w-9 h-9 rounded-xl bg-sage-500/10 border border-sage-500/20 flex items-center justify-center">
+              <Sparkles size={17} className="text-sage-300" />
             </div>
             <div>
-              <h2 className="font-display text-base text-cream">AI Assistant</h2>
-              <p className="text-[10px] text-cream-dim">Knows your schedule, tasks, and routines</p>
+              <h2 className="font-display text-lg text-cream leading-none">Assistant</h2>
+              <p className="text-[10px] text-cream-dim mt-1">Knows your schedule, tasks & routines</p>
             </div>
           </div>
           <button onClick={onClose} className="text-cream-dim hover:text-cream transition-colors">
@@ -232,36 +309,45 @@ export function AIChat({ open, onClose }: AIChatProps) {
           </button>
         </div>
 
-        {/* Messages */}
         <div ref={scrollRef} className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
           {loading ? (
             <div className="flex items-center justify-center h-full">
               <div className="w-6 h-6 border-2 border-sage-500/20 border-t-sage-300 rounded-full animate-spin" />
             </div>
           ) : messages.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-center gap-3">
-              <Sparkles size={28} className="text-sage-300/50" />
-              <p className="text-sm text-cream-dim">Ask me anything about your day</p>
-              <p className="text-xs text-cream-dim/60">I can help you prioritise, plan revision, or figure out what to do next</p>
+            <div className="flex flex-col items-center justify-center h-full text-center gap-3 px-6">
+              <div className="w-14 h-14 rounded-2xl bg-sage-500/10 border border-sage-500/20 flex items-center justify-center">
+                <Sparkles size={26} className="text-sage-300/70" />
+              </div>
+              <p className="text-sm text-cream font-medium">Hey! I'm your assistant.</p>
+              <p className="text-xs text-cream-dim/70 leading-relaxed">I can see your schedule, homework, tasks, tests, and routines. Ask me what to focus on, when your next test is, or what to do when you're running late.</p>
             </div>
           ) : (
             messages.map((msg) => (
               <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                {msg.role === 'assistant' && (
+                  <div className="w-7 h-7 rounded-lg bg-sage-500/10 border border-sage-500/15 flex items-center justify-center shrink-0 mr-2 mt-0.5">
+                    <Sparkles size={13} className="text-sage-300/70" />
+                  </div>
+                )}
                 <div
-                  className={`max-w-[80%] px-3.5 py-2.5 rounded-2xl text-sm whitespace-pre-wrap ${
+                  className={`max-w-[78%] px-3.5 py-2.5 rounded-2xl text-sm leading-relaxed ${
                     msg.role === 'user'
-                      ? 'bg-sage-500/15 text-cream rounded-br-md border border-sage-500/15'
-                      : 'bg-charcoal-800/60 text-cream-dim rounded-bl-md border border-white/[0.04]'
+                      ? 'bg-sage-500/15 text-cream rounded-br-md border border-sage-500/12'
+                      : 'bg-charcoal-800/50 text-cream-muted rounded-bl-md border border-white/[0.04]'
                   }`}
                 >
-                  {msg.content}
+                  {renderContent(msg.content)}
                 </div>
               </div>
             ))
           )}
           {thinking && (
             <div className="flex justify-start">
-              <div className="bg-charcoal-800/60 border border-white/[0.04] px-4 py-3 rounded-2xl rounded-bl-md">
+              <div className="w-7 h-7 rounded-lg bg-sage-500/10 border border-sage-500/15 flex items-center justify-center shrink-0 mr-2 mt-0.5">
+                <Sparkles size={13} className="text-sage-300/70" />
+              </div>
+              <div className="bg-charcoal-800/50 border border-white/[0.04] px-4 py-3 rounded-2xl rounded-bl-md">
                 <div className="flex gap-1">
                   <span className="w-1.5 h-1.5 rounded-full bg-cream-dim/40 animate-bounce" style={{ animationDelay: '0ms' }} />
                   <span className="w-1.5 h-1.5 rounded-full bg-cream-dim/40 animate-bounce" style={{ animationDelay: '150ms' }} />
@@ -272,7 +358,6 @@ export function AIChat({ open, onClose }: AIChatProps) {
           )}
         </div>
 
-        {/* Input */}
         <div className="px-4 py-3 border-t border-white/[0.06]">
           <div className="flex items-center gap-2">
             <input
@@ -280,7 +365,7 @@ export function AIChat({ open, onClose }: AIChatProps) {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-              placeholder="Ask about your day..."
+              placeholder="Ask me anything..."
               className="input-field flex-1"
               disabled={thinking}
               autoFocus
@@ -304,7 +389,7 @@ export function AIChatButton({ onClick }: { onClick: () => void }) {
   return (
     <button
       onClick={onClick}
-      className="fixed bottom-20 md:bottom-6 right-4 md:right-6 z-30 w-14 h-14 rounded-full bg-sage-500/15 border border-sage-500/25 flex items-center justify-center text-sage-200 shadow-lg shadow-sage-500/10 hover:scale-105 hover:bg-sage-500/20 transition-all"
+      className="fixed bottom-24 md:bottom-10 right-4 md:right-8 z-30 w-14 h-14 rounded-full bg-sage-500/15 border border-sage-500/25 flex items-center justify-center text-sage-200 shadow-lg shadow-sage-500/10 hover:scale-105 hover:bg-sage-500/20 transition-all"
       aria-label="AI Assistant"
     >
       <MessageCircle size={22} />
