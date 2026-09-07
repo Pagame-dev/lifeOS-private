@@ -101,7 +101,8 @@ async function completeTask(id: string): Promise<ActionResult> {
     .update({ status: 'done', completed_at: new Date().toISOString() })
     .eq('id', id);
   if (error) return { success: false, message: error.message };
-  const wasOnTime = taskData ? !((taskData as { due_date: string | null }).due_date && new Date((taskData as { due_date: string }).due_date) < new Date())) : true;
+  const taskRow = taskData as { due_date: string | null } | null;
+  const wasOnTime = !taskRow?.due_date || new Date(taskRow.due_date) >= new Date();
   observeTaskCompletion(id, wasOnTime);
   return { success: true, message: 'Task marked complete', action: 'complete_task', entityId: id };
 }
