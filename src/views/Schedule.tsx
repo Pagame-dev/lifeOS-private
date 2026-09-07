@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronLeft, ChevronRight, Plus, X, Trash2, Dumbbell, BookOpen, Calendar, Clock } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Plus, X, Trash2, Dumbbell, BookOpen, Calendar, Clock, Repeat } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-import type { Holiday, Subject, TimetableEvent, Workout, LogopedeSession, Homework, Task, ScheduleOverride } from '@/lib/types';
+import type { Holiday, Subject, TimetableEvent, Workout, LogopedeSession, Homework, Task, ScheduleOverride, WorkoutRecurrence } from '@/lib/types';
 
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const DAY_INDICES = [1, 2, 3, 4, 5, 6, 0];
@@ -25,9 +25,10 @@ function fmtTimeShort(time: string): string {
 }
 
 type EventSlot = { kind: 'event'; data: TimetableEvent; start_time: string; end_time: string; overrideLabel?: string };
-type WorkoutSlot = { kind: 'workout'; data: Workout; start_time: string; end_time: string };
+type WorkoutSlot = { kind: 'workout'; data: Workout; start_time: string; end_time: string; isRecurring?: boolean };
+type RecurringWorkoutSlot = { kind: 'recurring_workout'; data: WorkoutRecurrence; start_time: string; end_time: string };
 type LogopedeSlot = { kind: 'logopede'; data: LogopedeSession; start_time: string; end_time: string };
-type Slot = EventSlot | WorkoutSlot | LogopedeSlot;
+type Slot = EventSlot | WorkoutSlot | RecurringWorkoutSlot | LogopedeSlot;
 
 function dateKey(date: Date): string {
   return date.toISOString().split('T')[0];
@@ -66,7 +67,7 @@ function formatWeekRange(weekDates: Date[]): string {
   return `${firstMonth} ${first.getDate()} – ${lastMonth} ${last.getDate()}, ${last.getFullYear()}`;
 }
 
-type AddType = 'event' | 'workout' | 'homework' | 'task';
+type AddType = 'event' | 'workout' | 'recurring_workout' | 'homework' | 'task';
 
 export function Schedule() {
   const [events, setEvents] = useState<TimetableEvent[]>([]);
@@ -75,6 +76,8 @@ export function Schedule() {
   const [workouts, setWorkouts] = useState<Workout[]>([]);
   const [logopedeSessions, setLogopedeSessions] = useState<LogopedeSession[]>([]);
   const [overrides, setOverrides] = useState<ScheduleOverride[]>([]);
+  const [recurrences, setRecurrences] = useState<WorkoutRecurrence[]>([]);
+  const [editingRecurrence, setEditingRecurrence] = useState<WorkoutRecurrence | null>(null);
   const [loading, setLoading] = useState(true);
   const [now, setNow] = useState(new Date());
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
@@ -103,13 +106,14 @@ export function Schedule() {
   async function loadData() {
     const weekStartKey = dateKey(weekDates[0]);
     const weekEndKey = dateKey(weekDates[6]);
-    const [eventsRes, subjectsRes, holidaysRes, workoutsRes, logopedeRes, overridesRes] = await Promise.all([
+    const [eventsRes, subjectsRes, holidaysRes, workoutsRes, logopedeRes, overridesRes, recurrencesRes] = await Promise.all([
       supabase.from('timetable_events').select('*'),
       supabase.from('subjects').select('*'),
       supabase.from('holidays').select('*').gte('date', weekStartKey).lte('date', weekEndKey),
       supabase.from('workouts').select('*').gte('scheduled_date', weekStartKey).lte('scheduled_date', weekEndKey),
       supabase.from('logopede_sessions').select('*').gte('session_date', weekStartKey).lte('session_date', weekEndKey),
       supabase.from('schedule_overrides').select('*').gte('override_date', weekStartKey).lte('override_date', weekEndKey),
+      supabase.from('workout_recurrences').select('*').eq('is_active', true),
     ]);
 
     setEvents((eventsRes.data as TimetableEvent[]) || []);
@@ -118,6 +122,7 @@ export function Schedule() {
     setWorkouts((workoutsRes.data as Workout[]) || []);
     setLogopedeSessions((logopedeRes.data as LogopedeSession[]) || []);
     setOverrides((overridesRes.data as ScheduleOverride[]) || []);
+    setRecurrences((recurrencesRes.data as WorkoutRecurrence[]) || []);
     setLoading(false);
   }
 
@@ -162,7 +167,7 @@ export function Schedule() {
       return slot;
     });
 
-    const dayWorkouts: WorkoutSlot[] = workouts
+    const dayWorkouts: (WorkoutSlot | RecurringWorkoutSlot)[] = workouts
       .filter((w) => w.scheduled_date === dateKeyStr)
       .map((w) => ({
         kind: 'workout' as const,
@@ -173,6 +178,21 @@ export function Schedule() {
           : '18:00',
       }));
 
+    const existingWorkoutDates = new Set(workouts.filter((w) => w.scheduled_date === dateKeyStr && w.recurrence_id).map((w) => w.recurrence_id));
+    const dayRecurringWorkouts: RecurringWorkoutSlot[] = recurrences
+      .filter((r) => r.day_of_week === day && !existingWorkoutDates.has(r.id) && !isHoliday)
+      .map((r) => {
+        const startTime = r.scheduled_time || '17:00';
+        const duration = r.duration_min || 60;
+        const endHour = Math.min(23, parseInt(startTime.slice(0, 2)) + Math.ceil(duration / 60));
+        return {
+          kind: 'recurring_workout' as const,
+          data: r,
+          start_time: startTime,
+          end_time: `${String(endHour).padStart(2, '0')}:${startTime.slice(3, 5)}`,
+        };
+      });
+
     const dayLogopede: LogopedeSlot[] = logopedeSessions
       .filter((s) => s.session_date === dateKeyStr)
       .map((s) => ({
@@ -182,7 +202,7 @@ export function Schedule() {
         end_time: s.session_type === 'morning' ? '07:45' : '19:15',
       }));
 
-    return [...dayEvents, ...dayWorkouts, ...dayLogopede].sort((a, b) =>
+    return [...dayEvents, ...dayWorkouts, ...dayRecurringWorkouts, ...dayLogopede].sort((a, b) =>
       a.start_time.localeCompare(b.start_time),
     );
   }
@@ -348,6 +368,7 @@ export function Schedule() {
                           slot={slot}
                           onEditEvent={(e) => setEditingEvent(e)}
                           onEditWorkout={(w) => setEditingWorkout(w)}
+                          onEditRecurrence={(r) => setEditingRecurrence(r)}
                           getSubjectColor={getSubjectColor}
                         />
                       ))}
@@ -374,7 +395,8 @@ export function Schedule() {
             </div>
             <div className="space-y-2">
               <AddOption icon={Calendar} label="Event / Lesson" desc="Timetable event or class" onClick={() => setAddType('event')} />
-              <AddOption icon={Dumbbell} label="Workout" desc="Schedule a workout session" onClick={() => setAddType('workout')} />
+              <AddOption icon={Dumbbell} label="Workout" desc="Schedule a one-time workout" onClick={() => setAddType('workout')} />
+              <AddOption icon={Repeat} label="Recurring Workout" desc="Weekly repeating workout" onClick={() => setAddType('recurring_workout')} />
               <AddOption icon={BookOpen} label="Homework" desc="Add a homework assignment" onClick={() => setAddType('homework')} />
               <AddOption icon={Clock} label="Task" desc="Add a task with a deadline" onClick={() => setAddType('task')} />
             </div>
@@ -405,6 +427,17 @@ export function Schedule() {
         />
       )}
 
+      {/* Recurring workout editor */}
+      {(editingRecurrence || (addType === 'recurring_workout' && creatingForDay !== null)) && (
+        <RecurringWorkoutModal
+          recurrence={editingRecurrence}
+          initialDay={creatingForDay ?? 1}
+          initialTime={creatingAt}
+          onClose={() => { setEditingRecurrence(null); setAddMenuOpen(false); setAddType(null); setCreatingForDay(null); }}
+          onSaved={() => { loadData(); setEditingRecurrence(null); setAddMenuOpen(false); setAddType(null); setCreatingForDay(null); }}
+        />
+      )}
+
       {/* Homework quick-add */}
       {addType === 'homework' && creatingForDay !== null && (
         <HomeworkQuickAdd
@@ -426,10 +459,11 @@ export function Schedule() {
   );
 }
 
-function SlotCard({ slot, onEditEvent, onEditWorkout, getSubjectColor }: {
+function SlotCard({ slot, onEditEvent, onEditWorkout, onEditRecurrence, getSubjectColor }: {
   slot: Slot;
   onEditEvent: (e: TimetableEvent) => void;
   onEditWorkout: (w: Workout) => void;
+  onEditRecurrence: (r: WorkoutRecurrence) => void;
   getSubjectColor: (id: string | null) => string;
 }) {
   const startMin = minutesFromTime(slot.start_time);
@@ -483,6 +517,29 @@ function SlotCard({ slot, onEditEvent, onEditWorkout, getSubjectColor }: {
           <p className="truncate text-xs font-medium text-accent-warm leading-tight">{workout.title}</p>
         </div>
         <p className="text-[10px] font-mono text-cream-dim/60 mt-0.5">
+          {fmtTimeShort(slot.start_time)} – {fmtTimeShort(slot.end_time)}
+        </p>
+      </button>
+    );
+  }
+
+  if (slot.kind === 'recurring_workout') {
+    const rec = slot.data;
+    return (
+      <button
+        onClick={() => onEditRecurrence(rec)}
+        className="absolute left-1 right-1 z-10 rounded-lg border-l-[3px] border-accent-warm/40 px-2 py-1.5 text-left overflow-hidden transition-all hover:z-20 hover:scale-[1.02] border-dashed"
+        style={{
+          top: `${topOffset}px`,
+          height: `${height}px`,
+          background: 'linear-gradient(135deg, rgba(196,169,125,0.08), rgba(196,169,125,0.02))',
+        }}
+      >
+        <div className="flex items-center gap-1">
+          <Repeat size={10} className="text-accent-warm/60 shrink-0" />
+          <p className="truncate text-xs font-medium text-accent-warm/80 leading-tight">{rec.title}</p>
+        </div>
+        <p className="text-[10px] font-mono text-cream-dim/40 mt-0.5">
           {fmtTimeShort(slot.start_time)} – {fmtTimeShort(slot.end_time)}
         </p>
       </button>
@@ -761,6 +818,93 @@ function TaskQuickAdd({ initialDate, onClose, onSaved }: { initialDate: string; 
             </select>
           </div>
           <button onClick={handleSave} disabled={!title.trim() || saving} className="w-full btn-primary py-2.5 disabled:opacity-50">{saving ? 'Saving...' : 'Add Task'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RecurringWorkoutModal({ recurrence, initialDay, initialTime, onClose, onSaved }: {
+  recurrence: WorkoutRecurrence | null;
+  initialDay: number;
+  initialTime: string;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [title, setTitle] = useState(recurrence?.title || '');
+  const [workoutType, setWorkoutType] = useState(recurrence?.workout_type || '');
+  const [dayOfWeek, setDayOfWeek] = useState(recurrence?.day_of_week ?? initialDay);
+  const [scheduledTime, setScheduledTime] = useState(recurrence?.scheduled_time || initialTime);
+  const [duration, setDuration] = useState(recurrence?.duration_min?.toString() || '60');
+  const [isActive, setIsActive] = useState(recurrence?.is_active ?? true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSave() {
+    if (!title.trim()) return;
+    setSaving(true); setError(null);
+    const data = {
+      title: title.trim(),
+      workout_type: workoutType.trim(),
+      day_of_week: dayOfWeek,
+      scheduled_time: scheduledTime || null,
+      duration_min: duration ? parseInt(duration) : null,
+      jefit_link: recurrence?.jefit_link || '',
+      is_active: isActive,
+    };
+    try {
+      const result = recurrence
+        ? await supabase.from('workout_recurrences').update(data).eq('id', recurrence.id)
+        : await supabase.from('workout_recurrences').insert(data);
+      if (result.error) throw result.error;
+      onSaved();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Failed to save.');
+    } finally { setSaving(false); }
+  }
+
+  async function handleDelete() {
+    if (!recurrence) return;
+    setSaving(true);
+    await supabase.from('workout_recurrences').delete().eq('id', recurrence.id);
+    onSaved();
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-charcoal-950/70 px-4 backdrop-blur-sm animate-fade-in" onClick={onClose}>
+      <div className="glass-card w-full max-w-md p-5 animate-slide-up" onClick={(e) => e.stopPropagation()}>
+        <div className="mb-4 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Repeat size={18} className="text-accent-warm" />
+            <h2 className="font-display text-xl text-cream">{recurrence ? 'Edit Recurring Workout' : 'New Recurring Workout'}</h2>
+          </div>
+          <button onClick={onClose} className="text-cream-dim hover:text-cream transition-colors"><X size={18} /></button>
+        </div>
+        <div className="space-y-3">
+          <input value={title} onChange={(e) => setTitle(e.target.value)} className="input-field" placeholder="Workout title (e.g. Push Day)" autoFocus />
+          <input value={workoutType} onChange={(e) => setWorkoutType(e.target.value)} className="input-field" placeholder="Type (Push, Pull, Legs...)" />
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="mb-1.5 block text-xs text-cream-dim">Day of week</label>
+              <select value={dayOfWeek} onChange={(e) => setDayOfWeek(Number(e.target.value))} className="input-field">
+                {DAY_NAMES.map((d, i) => <option key={d} value={i} className="bg-charcoal-800">{d}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1.5 block text-xs text-cream-dim">Time</label>
+              <input type="time" value={scheduledTime} onChange={(e) => setScheduledTime(e.target.value)} className="input-field" />
+            </div>
+          </div>
+          <input type="number" value={duration} onChange={(e) => setDuration(e.target.value)} className="input-field" placeholder="Duration (min)" min={5} />
+          <label className="flex cursor-pointer items-center gap-2">
+            <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} className="accent-sage-500" />
+            <span className="text-sm text-cream-dim">Active (appears on schedule)</span>
+          </label>
+          {error && <div className="rounded-lg border border-red-500/10 bg-red-500/5 px-3 py-2 text-sm text-red-400/80">{error}</div>}
+          <div className="flex gap-2 pt-1">
+            <button onClick={handleSave} disabled={!title.trim() || saving} className="btn-primary flex-1 py-2.5 disabled:opacity-50">{saving ? 'Saving...' : 'Save'}</button>
+            {recurrence && <button onClick={handleDelete} disabled={saving} className="rounded-lg border border-red-500/15 px-4 py-2.5 text-sm text-red-400/80 hover:bg-red-500/5 disabled:opacity-50"><Trash2 size={14} /></button>}
+          </div>
         </div>
       </div>
     </div>
