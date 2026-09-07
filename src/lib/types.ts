@@ -345,19 +345,6 @@ export interface AIPreference {
   updated_at: string;
 }
 
-export interface AIMemory {
-  id: string;
-  user_id: string;
-  pattern_key: string;
-  pattern_value: string;
-  confidence_score: number;
-  observation_count: number;
-  last_observed: string;
-  is_temporary: boolean;
-  created_at: string;
-  updated_at: string;
-}
-
 export interface AIPlan {
   id: string;
   user_id: string;
@@ -421,4 +408,53 @@ export interface TaskDependency {
   task_id: string;
   depends_on_task_id: string;
   created_at: string;
+}
+
+export type AIMemoryType = 'explicit_preference' | 'learned_pattern' | 'temporary_context';
+
+export interface AIMemory {
+  id: string;
+  user_id: string;
+  memory_type: AIMemoryType;
+  pattern_key: string;
+  pattern_value: string;
+  confidence_score: number;
+  observation_count: number;
+  last_observed: string;
+  is_temporary: boolean;
+  expires_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type ScheduleOverrideAction = 'modified' | 'cancelled' | 'replaced';
+
+export interface ScheduleOverride {
+  id: string;
+  user_id: string;
+  override_date: string;
+  event_title: string;
+  action_type: ScheduleOverrideAction;
+  new_room: string | null;
+  new_start_time: string | null;
+  new_end_time: string | null;
+  new_title: string | null;
+  reason: string | null;
+  created_at: string;
+}
+
+export interface VoiceSettings {
+  id: string;
+  user_id: string;
+  voice_input_enabled: boolean;
+  voice_output_enabled: boolean;
+  auto_play_voice: boolean;
+  selected_voice: string;
+  speaking_speed: number;
+  text_when_type: boolean;
+  voice_when_type: boolean;
+  text_when_speak: boolean;
+  voice_when_speak: boolean;
+  created_at: string;
+  updated_at: string;
 }

@@ -3,6 +3,7 @@ import type {
   TimetableEvent, Homework, Task, TestExam, Routine,
   Workout, LogopedeSession, DailyLog, Goal, Project,
   UserSettings, AIPreference, Subject,
+  AIMemory, ScheduleOverride, VoiceSettings,
 } from '@/lib/types';
 
 export function fmtTime(time: string): string {
@@ -111,6 +112,13 @@ export interface LifeContext {
   tomorrowWorkouts: Workout[];
   tomorrowLogopede: LogopedeSession[];
   tomorrowRoutines: Routine[];
+  memories: AIMemory[];
+  explicitPreferences: AIMemory[];
+  learnedPatterns: AIMemory[];
+  temporaryContext: AIMemory[];
+  scheduleOverrides: ScheduleOverride[];
+  todayOverrides: ScheduleOverride[];
+  voiceSettings: VoiceSettings | null;
 }
 
 export async function buildContext(): Promise<LifeContext> {
@@ -141,6 +149,7 @@ export async function buildContext(): Promise<LifeContext> {
     workoutsRes, logopedeRes, todayLogRes, recentLogsRes,
     goalsRes, projectsRes,
     tmrwEventsRes, tmrwWorkoutsRes, tmrwLogopedeRes,
+    memoriesRes, overridesRes, voiceSettingsRes,
   ] = await Promise.all([
     supabase.from('user_settings').select('*').maybeSingle(),
     supabase.from('ai_preferences').select('*').maybeSingle(),
@@ -160,6 +169,9 @@ export async function buildContext(): Promise<LifeContext> {
     supabase.from('timetable_events').select('*').eq('day_of_week', tomorrowDow).order('start_time'),
     supabase.from('workouts').select('*').eq('scheduled_date', tomorrowKey),
     supabase.from('logopede_sessions').select('*').eq('session_date', tomorrowKey),
+    supabase.from('ai_memories').select('*').order('updated_at', { ascending: false }),
+    supabase.from('schedule_overrides').select('*').gte('override_date', tKey).lte('override_date', twoWeeksAhead),
+    supabase.from('voice_settings').select('*').maybeSingle(),
   ]);
 
   const subjects = (subjectsRes.data as Subject[]) || [];
@@ -198,6 +210,20 @@ export async function buildContext(): Promise<LifeContext> {
   const tomorrowLogopede = (tmrwLogopedeRes.data as LogopedeSession[]) || [];
   const tomorrowRoutines = routines.filter((r) => r.applicable_days?.includes(tomorrowDow));
 
+  const allMemories = (memoriesRes.data as AIMemory[]) || [];
+  const activeMemories = allMemories.filter((m) => {
+    if (m.expires_at && new Date(m.expires_at) < now) return false;
+    return true;
+  });
+  const explicitPreferences = activeMemories.filter((m) => m.memory_type === 'explicit_preference');
+  const learnedPatterns = activeMemories.filter((m) => m.memory_type === 'learned_pattern');
+  const temporaryContext = activeMemories.filter((m) => m.memory_type === 'temporary_context');
+
+  const allOverrides = (overridesRes.data as ScheduleOverride[]) || [];
+  const todayOverrides = allOverrides.filter((o) => o.override_date === tKey);
+
+  const voiceSettings = (voiceSettingsRes.data as VoiceSettings) || null;
+
   return {
     now, currentTime, currentMinutes, dayOfWeek, todayKey: tKey, weekType, isHoliday,
     settings: (settingsRes.data as UserSettings) || null,
@@ -216,5 +242,12 @@ export async function buildContext(): Promise<LifeContext> {
     tomorrowEvents,
     tomorrowHomework: homework.filter((h) => daysUntil(h.due_date) === 1),
     tomorrowWorkouts, tomorrowLogopede, tomorrowRoutines,
+    memories: activeMemories,
+    explicitPreferences,
+    learnedPatterns,
+    temporaryContext,
+    scheduleOverrides: allOverrides,
+    todayOverrides,
+    voiceSettings,
   };
 }

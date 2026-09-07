@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { Sparkles, X, Send, MessageCircle, Check, Trash2, Calendar, AlertCircle } from 'lucide-react';
+import { Sparkles, X, Send, MessageCircle, Check, Trash2, Calendar, AlertCircle, Mic, MicOff, Volume2, Square, ChevronRight } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { buildContext } from '@/lib/ai-context';
 import { processMessage, resetConversation, needsConfirmation } from '@/lib/ai-engine';
 import { executeAction as execAction } from '@/lib/ai-actions';
+import { useSpeechRecognition, useSpeechSynthesis } from '@/lib/use-voice';
 import type { AIAction, ActionResult } from '@/lib/ai-actions';
-import type { AIChatMessage } from '@/lib/types';
+import type { AIChatMessage, VoiceSettings } from '@/lib/types';
 
 interface AIChatProps {
   open: boolean;
@@ -19,6 +20,7 @@ interface DisplayMessage {
   actions?: AIAction[];
   actionResults?: ActionResult[];
   pendingConfirmation?: boolean;
+  spoken?: boolean;
 }
 
 export function AIChat({ open, onClose }: AIChatProps) {
@@ -26,19 +28,31 @@ export function AIChat({ open, onClose }: AIChatProps) {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(true);
   const [thinking, setThinking] = useState(false);
+  const [voiceSettings, setVoiceSettings] = useState<VoiceSettings | null>(null);
+  const [lastInputMode, setLastInputMode] = useState<'text' | 'voice'>('text');
   const scrollRef = useRef<HTMLDivElement>(null);
+  const lastSpokenRef = useRef<string | null>(null);
+
+  const { speak, stopSpeaking, speaking, voices, supported: ttsSupported } = useSpeechSynthesis();
+
+  const handleTranscript = useCallback((text: string) => {
+    setLastInputMode('voice');
+    setInput(text);
+  }, []);
+
+  const { state: recState, interim, start: startListening, stop: stopListening, supported: sttSupported } = useSpeechRecognition(handleTranscript);
 
   useEffect(() => {
     if (!open) return;
     resetConversation();
     async function loadMessages() {
-      const { data } = await supabase
-        .from('ai_chat_messages')
-        .select('*')
-        .order('created_at', { ascending: true })
-        .limit(50);
-      const loaded = (data as AIChatMessage[]) || [];
+      const [msgRes, voiceRes] = await Promise.all([
+        supabase.from('ai_chat_messages').select('*').order('created_at', { ascending: true }).limit(50),
+        supabase.from('voice_settings').select('*').maybeSingle(),
+      ]);
+      const loaded = (msgRes.data as AIChatMessage[]) || [];
       setMessages(loaded.map((m) => ({ id: m.id, role: m.role, content: m.content })));
+      setVoiceSettings((voiceRes.data as VoiceSettings) || null);
       setLoading(false);
     }
     loadMessages();
@@ -50,13 +64,34 @@ export function AIChat({ open, onClose }: AIChatProps) {
     }
   }, [messages, thinking]);
 
-  const handleSend = useCallback(async () => {
-    if (!input.trim() || thinking) return;
-    const userMessage = input.trim();
+  useEffect(() => {
+    if (!open) {
+      stopSpeaking();
+      stopListening();
+    }
+  }, [open, stopSpeaking, stopListening]);
+
+  function shouldSpeakViaVoice(inputMode: 'text' | 'voice'): boolean {
+    if (!voiceSettings || !ttsSupported) return false;
+    if (inputMode === 'text') return voiceSettings.voice_when_type && voiceSettings.voice_output_enabled;
+    return voiceSettings.voice_when_speak && voiceSettings.voice_output_enabled;
+  }
+
+  function speakResponse(text: string) {
+    if (!ttsSupported) return;
+    speak(text, { voice: voiceSettings?.selected_voice || undefined, rate: voiceSettings?.speaking_speed || 1.0 });
+  }
+
+  const handleSend = useCallback(async (messageOverride?: string, inputMode?: 'text' | 'voice') => {
+    const userMessage = (messageOverride || input).trim();
+    const mode = inputMode || lastInputMode;
+    if (!userMessage || thinking) return;
     setInput('');
     setThinking(true);
+    setLastInputMode(mode);
 
-    setMessages((prev) => [...prev, { id: `temp-u-${Date.now()}`, role: 'user', content: userMessage }]);
+    const tempId = `temp-u-${Date.now()}`;
+    setMessages((prev) => [...prev, { id: tempId, role: 'user', content: userMessage }]);
 
     try {
       await supabase.from('ai_chat_messages').insert({ role: 'user', content: userMessage });
@@ -66,25 +101,31 @@ export function AIChat({ open, onClose }: AIChatProps) {
 
       await supabase.from('ai_chat_messages').insert({ role: 'assistant', content: response.text });
 
+      const assistantId = `temp-a-${Date.now()}`;
       setMessages((prev) => {
-        const withoutTemp = prev.filter((m) => m.id !== `temp-u-${Date.now()}`);
+        const withoutTemp = prev.filter((m) => m.id !== tempId);
         return [...withoutTemp, {
-          id: `temp-a-${Date.now()}`,
+          id: assistantId,
           role: 'assistant' as const,
           content: response.text,
           actions: response.actions,
           actionResults: response.actionResults,
         }];
       });
+
+      if (shouldSpeakViaVoice(mode)) {
+        lastSpokenRef.current = assistantId;
+        speakResponse(response.text);
+      }
     } catch {
       setMessages((prev) => {
-        const withoutTemp = prev.filter((m) => m.id !== `temp-u-${Date.now()}`);
+        const withoutTemp = prev.filter((m) => m.id !== tempId);
         return [...withoutTemp, { id: `err-${Date.now()}`, role: 'assistant', content: 'Something went wrong. Please try again.' }];
       });
     } finally {
       setThinking(false);
     }
-  }, [input, thinking]);
+  }, [input, thinking, lastInputMode, voiceSettings, ttsSupported, speak]);
 
   async function handleAction(action: AIAction, messageIndex: number) {
     if (needsConfirmation(action.type)) {
@@ -113,6 +154,24 @@ export function AIChat({ open, onClose }: AIChatProps) {
     setMessages((prev) => prev.map((m, i) => i === messageIndex ? { ...m, pendingConfirmation: false } : m));
   }
 
+  function toggleListening() {
+    if (recState === 'listening') {
+      stopListening();
+    } else {
+      setLastInputMode('voice');
+      startListening();
+    }
+  }
+
+  function handleSpeakMessage(msg: DisplayMessage) {
+    if (speaking && lastSpokenRef.current === msg.id) {
+      stopSpeaking();
+      return;
+    }
+    lastSpokenRef.current = msg.id;
+    speakResponse(msg.content);
+  }
+
   function renderContent(text: string) {
     return text.split('\n').map((line, i) => {
       if (!line) return <div key={i} className="h-2" />;
@@ -133,6 +192,9 @@ export function AIChat({ open, onClose }: AIChatProps) {
 
   if (!open) return null;
 
+  const showVoiceInput = sttSupported && (voiceSettings?.voice_input_enabled !== false);
+  const showVoiceOutput = ttsSupported && (voiceSettings?.voice_output_enabled === true);
+
   return (
     <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center bg-charcoal-950/70 backdrop-blur-sm animate-fade-in" onClick={onClose}>
       <div
@@ -149,9 +211,16 @@ export function AIChat({ open, onClose }: AIChatProps) {
               <p className="text-[10px] text-cream-dim mt-1">Your Life OS, in context</p>
             </div>
           </div>
-          <button onClick={onClose} className="text-cream-dim hover:text-cream transition-colors">
-            <X size={18} />
-          </button>
+          <div className="flex items-center gap-2">
+            {showVoiceOutput && speaking && (
+              <button onClick={stopSpeaking} className="text-sage-300 hover:text-sage-200 transition-colors" aria-label="Stop speaking">
+                <Square size={16} />
+              </button>
+            )}
+            <button onClick={onClose} className="text-cream-dim hover:text-cream transition-colors">
+              <X size={18} />
+            </button>
+          </div>
         </div>
 
         <div ref={scrollRef} className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
@@ -194,6 +263,21 @@ export function AIChat({ open, onClose }: AIChatProps) {
                   >
                     {renderContent(msg.content)}
                   </div>
+
+                  {msg.role === 'assistant' && showVoiceOutput && (
+                    <button
+                      onClick={() => handleSpeakMessage(msg)}
+                      className={`mt-1 flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full transition-colors ${
+                        speaking && lastSpokenRef.current === msg.id
+                          ? 'text-sage-300 bg-sage-500/10'
+                          : 'text-cream-dim/50 hover:text-cream-dim hover:bg-white/[0.03]'
+                      }`}
+                    >
+                      {speaking && lastSpokenRef.current === msg.id
+                        ? <><Square size={9} /> Stop</>
+                        : <><Volume2 size={10} /> Listen</>}
+                    </button>
+                  )}
 
                   {msg.actionResults && msg.actionResults.length > 0 && (
                     <div className="mt-1.5 space-y-1">
@@ -255,7 +339,34 @@ export function AIChat({ open, onClose }: AIChatProps) {
         </div>
 
         <div className="px-4 py-3 border-t border-white/[0.06]">
+          {recState === 'listening' && (
+            <div className="mb-2 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-sage-500/8 border border-sage-500/15">
+              <span className="flex gap-1">
+                <span className="w-1 h-3 rounded-full bg-sage-300 animate-pulse" />
+                <span className="w-1 h-3 rounded-full bg-sage-300 animate-pulse" style={{ animationDelay: '100ms' }} />
+                <span className="w-1 h-3 rounded-full bg-sage-300 animate-pulse" style={{ animationDelay: '200ms' }} />
+              </span>
+              <span className="text-[11px] text-sage-300">{interim || 'Listening...'}</span>
+            </div>
+          )}
+          {recState === 'error' && (
+            <p className="mb-2 text-[11px] text-red-400/70">Voice input unavailable — please type instead.</p>
+          )}
           <div className="flex items-center gap-2">
+            {showVoiceInput && (
+              <button
+                onClick={toggleListening}
+                disabled={thinking}
+                className={`p-2.5 rounded-xl border transition-all disabled:opacity-30 ${
+                  recState === 'listening'
+                    ? 'bg-sage-500/20 border-sage-500/30 text-sage-200'
+                    : 'border-white/[0.06] bg-white/[0.02] text-cream-dim hover:text-cream hover:bg-white/[0.04]'
+                }`}
+                aria-label={recState === 'listening' ? 'Stop recording' : 'Start voice input'}
+              >
+                {recState === 'listening' ? <MicOff size={16} /> : <Mic size={16} />}
+              </button>
+            )}
             <input
               type="text"
               value={input}
@@ -267,7 +378,7 @@ export function AIChat({ open, onClose }: AIChatProps) {
               autoFocus
             />
             <button
-              onClick={handleSend}
+              onClick={() => handleSend()}
               disabled={!input.trim() || thinking}
               className="btn-primary p-2.5 disabled:opacity-50"
               aria-label="Send message"
@@ -285,7 +396,7 @@ function getActionIcon(type: string) {
   if (type.startsWith('complete')) return <Check size={11} />;
   if (type.startsWith('delete')) return <Trash2 size={11} />;
   if (type.startsWith('move') || type.startsWith('create') || type.startsWith('schedule')) return <Calendar size={11} />;
-  return null;
+  return <ChevronRight size={11} />;
 }
 
 export function AIChatButton({ onClick }: { onClick: () => void }) {

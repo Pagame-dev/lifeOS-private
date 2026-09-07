@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { LogOut, User, Bell, Moon, Sparkles, GraduationCap, CalendarOff, Repeat, Target, AlertCircle, Dumbbell, Lightbulb, FileText, BarChart3, ChevronLeft } from 'lucide-react';
+import { LogOut, User, Bell, Moon, Sparkles, GraduationCap, CalendarOff, Repeat, Target, AlertCircle, Dumbbell, Lightbulb, FileText, BarChart3, ChevronLeft, Mic, Volume2, Brain, Trash2, Plus } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
 import { SubjectsManager } from '@/components/SubjectsManager';
@@ -11,6 +11,7 @@ import { Workouts } from '@/views/Workouts';
 import { Notes } from '@/views/Notes';
 import { DailyLogView } from '@/views/DailyLog';
 import { Statistics } from '@/views/Statistics';
+import type { AIMemory, VoiceSettings } from '@/lib/types';
 
 type Section =
   | 'menu'
@@ -18,6 +19,7 @@ type Section =
   | 'notifications'
   | 'sleep'
   | 'planning'
+  | 'ai_personalisation'
   | 'subjects'
   | 'routines'
   | 'holidays'
@@ -62,6 +64,7 @@ export function More() {
       items: [
         { id: 'profile', label: 'Profile & Display', icon: User },
         { id: 'planning', label: 'AI Planning Preferences', icon: Sparkles },
+        { id: 'ai_personalisation', label: 'AI Personalisation & Voice', icon: Brain },
         { id: 'notifications', label: 'Notifications', icon: Bell },
         { id: 'sleep', label: 'Sleep & Lifestyle', icon: Moon },
       ],
@@ -79,6 +82,7 @@ export function More() {
         </button>
         {section === 'profile' && <ProfileSettings />}
         {section === 'planning' && <PlanningSettings />}
+        {section === 'ai_personalisation' && <AIPersonalisationSettings />}
         {section === 'subjects' && <SubjectsManager />}
         {section === 'routines' && <RoutinesManager />}
         {section === 'holidays' && <HolidaysManager />}
@@ -275,6 +279,246 @@ function PlanningSettings() {
         <button onClick={handleSave} disabled={saving} className="w-full btn-primary py-2.5 disabled:opacity-50">
           {saving ? 'Saving...' : 'Save'}
         </button>
+      </div>
+    </div>
+  );
+}
+
+function AIPersonalisationSettings() {
+  const { user } = useAuth();
+  const [memories, setMemories] = useState<AIMemory[]>([]);
+  const [voiceSettings, setVoiceSettings] = useState<VoiceSettings | null>(null);
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [newPref, setNewPref] = useState('');
+
+  useEffect(() => {
+    Promise.all([
+      supabase.from('ai_memories').select('*').order('updated_at', { ascending: false }),
+      supabase.from('voice_settings').select('*').maybeSingle(),
+    ]).then(([memRes, voiceRes]) => {
+      setMemories((memRes.data as AIMemory[]) || []);
+      setVoiceSettings((voiceRes.data as VoiceSettings) || null);
+      setLoading(false);
+    });
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      const loadVoices = () => {
+        const v = window.speechSynthesis.getVoices();
+        if (v.length > 0) setVoices(v);
+      };
+      loadVoices();
+      window.speechSynthesis.onvoiceschanged = loadVoices;
+      return () => { window.speechSynthesis.onvoiceschanged = null; };
+    }
+  }, []);
+
+  async function saveVoiceSettings(updates: Partial<VoiceSettings>) {
+    if (!voiceSettings) {
+      const { data } = await supabase.from('voice_settings').insert({ user_id: user!.id, ...updates }).select('*').maybeSingle();
+      setVoiceSettings(data as VoiceSettings);
+      return;
+    }
+    setSaving(true);
+    await supabase.from('voice_settings').update(updates).eq('id', voiceSettings.id);
+    setVoiceSettings({ ...voiceSettings, ...updates });
+    setSaving(false);
+  }
+
+  async function deleteMemory(id: string) {
+    await supabase.from('ai_memories').delete().eq('id', id);
+    setMemories((prev) => prev.filter((m) => m.id !== id));
+  }
+
+  async function addExplicitPreference() {
+    if (!newPref.trim()) return;
+    const patternKey = newPref.slice(0, 60).replace(/\s+/g, '_').toLowerCase();
+    const { data } = await supabase
+      .from('ai_memories')
+      .insert({ memory_type: 'explicit_preference', pattern_key: patternKey, pattern_value: newPref.trim(), confidence_score: 1.0, observation_count: 1, is_temporary: false })
+      .select('*')
+      .maybeSingle();
+    if (data) setMemories((prev) => [data as AIMemory, ...prev]);
+    setNewPref('');
+  }
+
+  async function clearAllMemories() {
+    await supabase.from('ai_memories').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    setMemories([]);
+  }
+
+  if (loading) return <div className="glass-card h-40 animate-pulse" />;
+
+  const explicitPrefs = memories.filter((m) => m.memory_type === 'explicit_preference');
+  const learnedPats = memories.filter((m) => m.memory_type === 'learned_pattern');
+  const tempCtx = memories.filter((m) => m.memory_type === 'temporary_context');
+
+  return (
+    <div className="space-y-4">
+      <h2 className="font-display text-xl text-cream">AI Personalisation & Voice</h2>
+
+      {/* Memory section */}
+      <div className="glass-card p-5 space-y-4">
+        <div>
+          <h3 className="text-sm font-medium text-cream flex items-center gap-2"><Brain size={15} className="text-sage-300" /> What I know about you</h3>
+          <p className="text-xs text-cream-dim/60 mt-1">The assistant uses these to give better, more personalised advice.</p>
+        </div>
+
+        {/* Explicit preferences */}
+        <div>
+          <p className="text-xs text-cream-dim mb-2 font-medium">Explicit preferences</p>
+          <div className="space-y-1.5">
+            {explicitPrefs.length === 0 ? (
+              <p className="text-xs text-cream-dim/50 italic">None yet. Tell the assistant "I always split long homework into shorter sessions" to add one.</p>
+            ) : explicitPrefs.map((m) => (
+              <div key={m.id} className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-white/[0.02] border border-white/[0.04]">
+                <span className="text-xs text-cream-muted flex-1">{m.pattern_value}</span>
+                <button onClick={() => deleteMemory(m.id)} className="text-cream-dim/50 hover:text-red-400/70 transition-colors shrink-0">
+                  <Trash2 size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+          <div className="mt-2 flex gap-2">
+            <input
+              type="text"
+              value={newPref}
+              onChange={(e) => setNewPref(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') addExplicitPreference(); }}
+              placeholder="Add a preference..."
+              className="input-field flex-1 text-xs"
+            />
+            <button onClick={addExplicitPreference} disabled={!newPref.trim()} className="btn-primary px-3 py-2 disabled:opacity-50">
+              <Plus size={14} />
+            </button>
+          </div>
+        </div>
+
+        {/* Learned patterns */}
+        <div>
+          <p className="text-xs text-cream-dim mb-2 font-medium">Observed patterns</p>
+          <div className="space-y-1.5">
+            {learnedPats.length === 0 ? (
+              <p className="text-xs text-cream-dim/50 italic">No patterns observed yet. The assistant learns from how you use Life OS over time.</p>
+            ) : learnedPats.map((m) => (
+              <div key={m.id} className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-white/[0.02] border border-white/[0.04]">
+                <div className="flex-1">
+                  <span className="text-xs text-cream-muted">{m.pattern_value}</span>
+                  <span className="text-[10px] text-cream-dim/40 ml-2">{m.observation_count}x · {Math.round(m.confidence_score * 100)}%</span>
+                </div>
+                <button onClick={() => deleteMemory(m.id)} className="text-cream-dim/50 hover:text-red-400/70 transition-colors shrink-0">
+                  <Trash2 size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Temporary context */}
+        {tempCtx.length > 0 && (
+          <div>
+            <p className="text-xs text-cream-dim mb-2 font-medium">Temporary context</p>
+            <div className="space-y-1.5">
+              {tempCtx.map((m) => (
+                <div key={m.id} className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-white/[0.02] border border-white/[0.04]">
+                  <span className="text-xs text-cream-muted flex-1">{m.pattern_value}</span>
+                  <button onClick={() => deleteMemory(m.id)} className="text-cream-dim/50 hover:text-red-400/70 transition-colors shrink-0">
+                    <Trash2 size={12} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {memories.length > 0 && (
+          <button onClick={clearAllMemories} className="w-full text-xs text-red-400/60 hover:text-red-400/80 py-2 transition-colors">
+            Clear all AI memory
+          </button>
+        )}
+      </div>
+
+      {/* Voice settings */}
+      <div className="glass-card p-5 space-y-4">
+        <div>
+          <h3 className="text-sm font-medium text-cream flex items-center gap-2"><Mic size={15} className="text-sage-300" /> Voice settings</h3>
+          <p className="text-xs text-cream-dim/60 mt-1">Control how the assistant listens and responds.</p>
+        </div>
+
+        <label className="flex items-center justify-between cursor-pointer">
+          <span className="text-sm text-cream-dim flex items-center gap-2"><Mic size={14} /> Voice input enabled</span>
+          <input
+            type="checkbox"
+            checked={voiceSettings?.voice_input_enabled ?? true}
+            onChange={(e) => saveVoiceSettings({ voice_input_enabled: e.target.checked })}
+            className="accent-sage-500"
+          />
+        </label>
+
+        <label className="flex items-center justify-between cursor-pointer">
+          <span className="text-sm text-cream-dim flex items-center gap-2"><Volume2 size={14} /> Voice output enabled</span>
+          <input
+            type="checkbox"
+            checked={voiceSettings?.voice_output_enabled ?? false}
+            onChange={(e) => saveVoiceSettings({ voice_output_enabled: e.target.checked })}
+            className="accent-sage-500"
+          />
+        </label>
+
+        {voices.length > 0 && (
+          <div>
+            <label className="block text-xs text-cream-dim mb-1.5">Selected voice</label>
+            <select
+              value={voiceSettings?.selected_voice || ''}
+              onChange={(e) => saveVoiceSettings({ selected_voice: e.target.value })}
+              className="input-field"
+            >
+              <option value="" className="bg-charcoal-800">Default</option>
+              {voices.filter((v) => v.lang.startsWith('en')).map((v) => (
+                <option key={v.name} value={v.name} className="bg-charcoal-800">{v.name}</option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        <div>
+          <label className="block text-xs text-cream-dim mb-1.5">Speaking speed: {((voiceSettings?.speaking_speed ?? 1.0)).toFixed(1)}x</label>
+          <input
+            type="range"
+            min="0.5"
+            max="2"
+            step="0.1"
+            value={voiceSettings?.speaking_speed ?? 1.0}
+            onChange={(e) => saveVoiceSettings({ speaking_speed: parseFloat(e.target.value) })}
+            className="w-full accent-sage-500"
+          />
+        </div>
+
+        <div className="border-t border-white/[0.06] pt-3 space-y-2">
+          <p className="text-xs text-cream-dim font-medium">When I type, reply with:</p>
+          <label className="flex items-center justify-between cursor-pointer">
+            <span className="text-xs text-cream-dim">Text</span>
+            <input type="checkbox" checked={voiceSettings?.text_when_type ?? true} onChange={(e) => saveVoiceSettings({ text_when_type: e.target.checked })} className="accent-sage-500" />
+          </label>
+          <label className="flex items-center justify-between cursor-pointer">
+            <span className="text-xs text-cream-dim">Voice</span>
+            <input type="checkbox" checked={voiceSettings?.voice_when_type ?? false} onChange={(e) => saveVoiceSettings({ voice_when_type: e.target.checked })} className="accent-sage-500" />
+          </label>
+        </div>
+
+        <div className="space-y-2">
+          <p className="text-xs text-cream-dim font-medium">When I speak, reply with:</p>
+          <label className="flex items-center justify-between cursor-pointer">
+            <span className="text-xs text-cream-dim">Text</span>
+            <input type="checkbox" checked={voiceSettings?.text_when_speak ?? true} onChange={(e) => saveVoiceSettings({ text_when_speak: e.target.checked })} className="accent-sage-500" />
+          </label>
+          <label className="flex items-center justify-between cursor-pointer">
+            <span className="text-xs text-cream-dim">Voice</span>
+            <input type="checkbox" checked={voiceSettings?.voice_when_speak ?? true} onChange={(e) => saveVoiceSettings({ voice_when_speak: e.target.checked })} className="accent-sage-500" />
+          </label>
+        </div>
+
+        {saving && <p className="text-[11px] text-cream-dim/50">Saving...</p>}
       </div>
     </div>
   );

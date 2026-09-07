@@ -7,7 +7,8 @@ import type {
   AIAction, ActionResult,
 } from './ai-actions';
 import { executeAction, needsConfirmation } from './ai-actions';
-import type { Homework, Task, TestExam, Workout, TimetableEvent } from '@/lib/types';
+import { supabase } from '@/lib/supabase';
+import type { Homework, Task, TestExam, Workout, TimetableEvent, AIMemory } from '@/lib/types';
 
 export interface ConversationTurn {
   userMessage: string;
@@ -21,7 +22,8 @@ interface ConversationState {
   turns: ConversationTurn[];
   pendingActions?: AIAction[];
   topicContext?: string;
-  planningMode: 'balanced' | 'productive' | 'relaxed';
+  lastTopicItem?: { kind: string; title: string; id: string } | null;
+  planningMode: 'balanced' | 'productive' | 'relaxed' | 'custom';
   temporaryState: {
     tired?: boolean;
     notHomeUntil?: string | null;
@@ -155,6 +157,24 @@ export async function processMessage(userMessage: string, ctx: LifeContext): Pro
     case 'free_time':
       response = handleFreeTime(ctx);
       break;
+    case 'why':
+      response = handleWhy(ctx);
+      break;
+    case 'evening_review':
+      response = handleEveningReview(ctx);
+      break;
+    case 'set_preference':
+      response = await handleSetPreference(intent, ctx);
+      break;
+    case 'nothing':
+      response = handleNothing(ctx);
+      break;
+    case 'cancel_workout':
+      response = await handleSkipWorkout(intent, ctx);
+      break;
+    case 'going_bed':
+      response = handleGoingToBed(ctx);
+      break;
     default:
       response = handleFallback(ctx);
   }
@@ -212,6 +232,16 @@ function detectIntent(q: string, conv: ConversationState, _ctx: LifeContext): De
     if (/^no|nope|cancel|don'?t|stop/.test(q)) return { type: 'cancel_action' };
   }
 
+  if (/why|why'?s that|how come|what makes you say|explain/.test(q) && conv.turns.length > 0) return { type: 'why' };
+  if (/review.*day|how.*day.*go|evening review|wrap.*up|reflect.*on.*today|what.*did.*i.*do/.test(q)) return { type: 'evening_review' };
+  if (/i always|i prefer|i like to|i want to|from now on|don'?t ever|never.*schedule/.test(q) && /split|short|long|before|after|morning|evening|workout|homework|break|rest|session/.test(q)) {
+    const prefMatch = q.match(/i always (.+)|i prefer (.+)|i like to (.+)|i want to (.+)|from now on (.+)|don'?t ever (.+)|never schedule (.+)/);
+    return { type: 'set_preference', data: { preference: prefMatch?.[1] || prefMatch?.[2] || prefMatch?.[3] || prefMatch?.[4] || prefMatch?.[5] || prefMatch?.[6] || prefMatch?.[7] || q } };
+  }
+  if (/do nothing|just.*chill|just.*relax|no work tonight|free evening|don'?t want to do anything|can i just/.test(q)) return { type: 'nothing' };
+  if (/going to bed|off to bed|goodnight|good night|going to sleep|heading to bed/.test(q)) return { type: 'going_bed' };
+  if (/don'?t want to work out|skip.*workout|no workout|skip.*gym|cancel.*workout|i don'?t want to exercise/.test(q)) return { type: 'cancel_workout' };
+
   if (/briefing|what'?s my day|give me.*overview|morning briefing|daily briefing/.test(q)) return { type: 'briefing' };
   if (/replan.*evening|replan.*night|replan.*day|adjust.*plan|redo.*plan/.test(q)) return { type: 'replan' };
   if (/plan.*evening|plan.*night|what tonight|what should i do tonight|tonight'?s plan/.test(q)) return { type: 'plan_evening' };
@@ -263,8 +293,9 @@ function detectIntent(q: string, conv: ConversationState, _ctx: LifeContext): De
   return { type: 'fallback' };
 }
 
-function userMessageExtract(_q: string, _pattern: RegExp): string | undefined {
-  return undefined;
+function userMessageExtract(q: string, pattern: RegExp): string | undefined {
+  const match = q.match(pattern);
+  return match?.[1]?.trim() || undefined;
 }
 
 function resolveDateWord(word: string): string {
@@ -359,6 +390,9 @@ function handleGreeting(ctx: LifeContext): AIResponse {
   if (time < 12 * 60) timeGreeting = 'Good morning';
   else if (time < 17 * 60) timeGreeting = 'Good afternoon';
   else timeGreeting = 'Good evening';
+
+  const namePref = ctx.explicitPreferences.find((m) => m.pattern_key === 'greeting_style');
+  if (namePref && namePref.pattern_value === 'casual') timeGreeting = 'Hey';
 
   if (ctx.currentEvent) {
     return { text: `${timeGreeting}! You're in ${ctx.currentEvent.title} right now — it ends at ${fmtTime(ctx.currentEvent.end_time)}.${ctx.nextEvent ? ` After that, ${ctx.nextEvent.title} at ${fmtTime(ctx.nextEvent.start_time)}.` : ''} What can I help with?` };
@@ -623,9 +657,22 @@ function handleHomeworkQuery(ctx: LifeContext): AIResponse {
 
   const actions: AIAction[] = [];
   if (ctx.dueTodayHomework.length > 0) {
+    state.lastTopicItem = { kind: 'homework', title: ctx.dueTodayHomework[0].title, id: ctx.dueTodayHomework[0].id };
     actions.push({ type: 'complete_homework', label: `Mark "${ctx.dueTodayHomework[0].title}" done`, entityId: ctx.dueTodayHomework[0].id, entityType: 'homework' });
+  } else if (ctx.homework.length > 0) {
+    state.lastTopicItem = { kind: 'homework', title: ctx.homework[0].title, id: ctx.homework[0].id };
   }
-  return { text: lines.join('\n'), actions };
+
+  let memoryNote = '';
+  const splitPref = ctx.learnedPatterns.find((m) => m.pattern_key.includes('split') || m.pattern_value.toLowerCase().includes('split'));
+  if (splitPref && ctx.homework.some((h) => (h.estimated_duration_min || 0) > 90)) {
+    const longOnes = ctx.homework.filter((h) => (h.estimated_duration_min || 0) > 90);
+    if (longOnes.length > 0 && splitPref.confidence_score >= 0.3) {
+      memoryNote = `\n\n${splitPref.confidence_score >= 0.6 ? 'You usually' : 'It looks like you tend to'} split long assignments — ${longOnes.map((h) => h.title).join(', ')} ${longOnes.length > 1 ? 'are' : 'is'} over 90 min. Want me to break ${longOnes.length > 1 ? 'them' : 'it'} up?`;
+    }
+  }
+
+  return { text: lines.join('\n') + memoryNote, actions };
 }
 
 function handleTestsQuery(ctx: LifeContext): AIResponse {
@@ -736,14 +783,29 @@ async function handleAddRevision(intent: DetectedIntent, _ctx: LifeContext): Pro
 async function handleMoveItem(intent: DetectedIntent, ctx: LifeContext): Promise<AIResponse> {
   const q = (intent.data?.query as string) || state.turns[state.turns.length - 1]?.userMessage || '';
   const tomorrowDate = addDays(todayKey(), 1);
-  const hw = ctx.homework.find((h) => q.toLowerCase().includes(h.title.toLowerCase().slice(0, 5)));
+
+  let hw = ctx.homework.find((h) => q.toLowerCase().includes(h.title.toLowerCase().slice(0, 5)));
+  if (!hw) {
+    const lastTopic = state.lastTopicItem;
+    if (lastTopic?.kind === 'homework') {
+      hw = ctx.homework.find((h) => h.id === lastTopic.id);
+    }
+  }
   if (hw) {
+    state.lastTopicItem = { kind: 'homework', title: hw.title, id: hw.id };
     const action: AIAction = { type: 'move_homework', label: `Move to ${fmtRelativeDate(tomorrowDate)}`, entityId: hw.id, entityType: 'homework', data: { dueDate: tomorrowDate } };
     const result = await executeAction(action);
     return { text: result.success ? `Done — I've moved ${hw.title} to ${fmtRelativeDate(tomorrowDate)}.` : `I couldn't move that: ${result.message}`, actionResults: [result] };
   }
-  const task = ctx.tasks.find((t) => q.toLowerCase().includes(t.title.toLowerCase().slice(0, 5)));
+  let task = ctx.tasks.find((t) => q.toLowerCase().includes(t.title.toLowerCase().slice(0, 5)));
+  if (!task) {
+    const lastTopic = state.lastTopicItem;
+    if (lastTopic?.kind === 'task') {
+      task = ctx.tasks.find((t) => t.id === lastTopic.id);
+    }
+  }
   if (task) {
+    state.lastTopicItem = { kind: 'task', title: task.title, id: task.id };
     const action: AIAction = { type: 'move_task', label: `Move to ${fmtRelativeDate(tomorrowDate)}`, entityId: task.id, entityType: 'task', data: { dueDate: tomorrowDate } };
     const result = await executeAction(action);
     return { text: result.success ? `Done — I've moved ${task.title} to ${fmtRelativeDate(tomorrowDate)}.` : `I couldn't move that: ${result.message}`, actionResults: [result] };
@@ -756,13 +818,23 @@ async function handleMoveItem(intent: DetectedIntent, ctx: LifeContext): Promise
 
 async function handleCompleteItem(intent: DetectedIntent, ctx: LifeContext): Promise<AIResponse> {
   const q = (intent.data?.query as string) || state.turns[state.turns.length - 1]?.userMessage || '';
-  const hw = ctx.homework.find((h) => q.toLowerCase().includes(h.title.toLowerCase().slice(0, 5)));
+  let hw = ctx.homework.find((h) => q.toLowerCase().includes(h.title.toLowerCase().slice(0, 5)));
+  if (!hw) {
+    const lastTopic = state.lastTopicItem;
+    if (lastTopic?.kind === 'homework') hw = ctx.homework.find((h) => h.id === lastTopic.id);
+  }
   if (hw) {
+    state.lastTopicItem = { kind: 'homework', title: hw.title, id: hw.id };
     const result = await executeAction({ type: 'complete_homework', label: 'Complete', entityId: hw.id, entityType: 'homework' });
     return { text: result.success ? `Done — ${hw.title} marked complete.` : `Couldn't do that: ${result.message}`, actionResults: [result] };
   }
-  const task = ctx.tasks.find((t) => q.toLowerCase().includes(t.title.toLowerCase().slice(0, 5)));
+  let task = ctx.tasks.find((t) => q.toLowerCase().includes(t.title.toLowerCase().slice(0, 5)));
+  if (!task) {
+    const lastTopic = state.lastTopicItem;
+    if (lastTopic?.kind === 'task') task = ctx.tasks.find((t) => t.id === lastTopic.id);
+  }
   if (task) {
+    state.lastTopicItem = { kind: 'task', title: task.title, id: task.id };
     const result = await executeAction({ type: 'complete_task', label: 'Complete', entityId: task.id, entityType: 'task' });
     return { text: result.success ? `Done — ${task.title} marked complete.` : `Couldn't do that: ${result.message}`, actionResults: [result] };
   }
@@ -809,10 +881,147 @@ function handleFallback(ctx: LifeContext): AIResponse {
       return { text: `Is there something specific you'd like me to help with? I can prioritise your day, check homework, plan revision, or take actions like moving tasks.` };
     }
   }
+  if (ctx.learnedPatterns.length > 0 && state.turns.length === 0) {
+    const topPattern = ctx.learnedPatterns[0];
+    if (topPattern.confidence_score >= 0.5) {
+      return { text: `I'm here to help with your day. I've noticed ${topPattern.pattern_value.toLowerCase()} — want me to keep that in mind when planning? You can also ask me "what should I focus on?", "plan my evening", or "do I have any tests?".` };
+    }
+  }
   if (ctx.currentEvent) {
     return { text: `I'm not sure what you mean, but I can see you're in ${ctx.currentEvent.title} right now. Try asking me "what should I focus on?", "do I have homework?", or "plan my evening".` };
   }
   return { text: `I'm here to help with your day. Try asking "what should I focus on?", "plan my evening", "do I have any tests?", or "add a task for tomorrow".` };
+}
+
+function handleWhy(_ctx: LifeContext): AIResponse {
+  const lastTurn = state.turns[state.turns.length - 1];
+  if (!lastTurn) return { text: `I don't have a previous recommendation to explain — ask me something first and then follow up with "why?"` };
+  const lastResponse = lastTurn.assistantResponse.toLowerCase();
+  if (lastResponse.includes('workout') && lastResponse.includes('skip')) {
+    return { text: `I suggested skipping the workout because you already have school, possibly logopède, and homework deadlines tonight. Workouts rank below academic commitments — when the day is full, training is the first thing I'd drop. You can still do it if you want, but I'd rather protect your sleep than add exercise on top of an already heavy evening.` };
+  }
+  if (lastResponse.includes('chemistry') || lastResponse.includes('homework') || lastResponse.includes('due')) {
+    return { text: `I prioritised homework because it has a deadline — if it's due tomorrow, leaving it creates more pressure later. Tests and fixed events come first, then homework with the closest deadline, then everything else.` };
+  }
+  if (lastResponse.includes('revision')) {
+    return { text: `I suggested revision because you have a test coming up and your revision progress is still low. Short sessions over multiple days are more effective than cramming the night before — even 25 minutes helps.` };
+  }
+  if (lastResponse.includes('rest') || lastResponse.includes('tired')) {
+    return { text: `I suggested resting because you said you're tired. Sleep and recovery affect everything else — school performance, mood, and focus. Pushing through exhaustion usually backfires. I'd rather you do one important thing well than three things badly.` };
+  }
+  return { text: `My recommendations are based on your actual Life OS data — deadlines, priorities, fixed commitments, and what you've told me about how you're feeling. If I got something wrong, just tell me.` };
+}
+
+function handleEveningReview(ctx: LifeContext): AIResponse {
+  const parts: string[] = [];
+  const completedToday: string[] = [];
+  const missed: string[] = [];
+  const skipped: string[] = [];
+
+  for (const w of ctx.todayWorkouts) {
+    if (w.status === 'completed') completedToday.push(w.title);
+    else if (w.status === 'skipped') skipped.push(w.title);
+    else if (w.status === 'planned') missed.push(`${w.title} (workout)`);
+  }
+  for (const s of ctx.todayLogopede) {
+    if (s.status === 'completed') completedToday.push(`Logopède ${s.session_type}`);
+    else missed.push(`Logopède ${s.session_type}`);
+  }
+  for (const r of ctx.todayRoutines) {
+    missed.push(r.name);
+  }
+  const hwToday = [...ctx.dueTodayHomework, ...ctx.overdueHomework];
+  for (const h of hwToday) {
+    if (h.status === 'done') completedToday.push(h.title);
+    else missed.push(h.title);
+  }
+
+  if (completedToday.length > 0) {
+    parts.push(`**Completed:** ${completedToday.join(', ')}`);
+  }
+  if (missed.length > 0) {
+    parts.push(`**Still pending:** ${missed.slice(0, 4).join(', ')}${missed.length > 4 ? ` and ${missed.length - 4} more` : ''}`);
+  }
+  if (skipped.length > 0) {
+    parts.push(`**Intentionally skipped:** ${skipped.join(', ')}`);
+  }
+
+  const tomorrowImportant: string[] = [];
+  if (ctx.tomorrowEvents.length > 0) tomorrowImportant.push(`${ctx.tomorrowEvents.length} classes`);
+  if (ctx.tomorrowHomework.length > 0) tomorrowImportant.push(`homework due: ${ctx.tomorrowHomework.map((h) => h.title).join(', ')}`);
+  if (ctx.tomorrowWorkouts.length > 0) tomorrowImportant.push(`workout scheduled`);
+  if (ctx.tomorrowLogopede.length > 0) tomorrowImportant.push(`logopède`);
+
+  const closeTest = ctx.tests.find((t) => daysUntil(t.exam_date) === 1);
+  if (closeTest) tomorrowImportant.push(`${closeTest.title} tomorrow`);
+
+  if (tomorrowImportant.length > 0) {
+    parts.push(`**Tomorrow:** ${tomorrowImportant.join(' · ')}`);
+  }
+
+  if (parts.length === 0) {
+    return { text: `Not much to review today — it was a quiet one. ${tomorrowImportant.length > 0 ? `Tomorrow has ${tomorrowImportant.join(', ')}.` : 'Tomorrow looks clear too.'}` };
+  }
+
+  let closing = '';
+  if (missed.length > 2) closing = `\n\nA few things slipped — that's okay. Want me to move them to tomorrow?`;
+  else if (missed.length === 0 && completedToday.length > 0) closing = `\n\nGood day overall. Get some rest.`;
+  else if (missed.length > 0) closing = `\n\n${missed.length === 1 ? 'One thing to sort out.' : `${missed.length} things to sort out.`} Want me to reschedule?`;
+
+  return { text: parts.join('\n') + closing, actions: missed.length > 0 ? [{ type: 'move_item', label: 'Move pending to tomorrow' }] : undefined };
+}
+
+async function handleSetPreference(intent: DetectedIntent, _ctx: LifeContext): Promise<AIResponse> {
+  const preference = intent.data?.preference as string;
+  if (!preference) return { text: `What preference would you like me to remember?` };
+
+  const patternKey = preference.slice(0, 60).replace(/\s+/g, '_').toLowerCase();
+  const { error } = await supabase
+    .from('ai_memories')
+    .insert({
+      memory_type: 'explicit_preference',
+      pattern_key: patternKey,
+      pattern_value: preference,
+      confidence_score: 1.0,
+      observation_count: 1,
+      is_temporary: false,
+    });
+
+  if (error) return { text: `I couldn't save that preference — ${error.message}` };
+  return { text: `Got it — I'll remember that you ${preference}. I'll factor that into future planning. You can see and manage this in Settings under AI Personalisation.` };
+}
+
+function handleNothing(ctx: LifeContext): AIResponse {
+  const urgent = ctx.overdueHomework.length + ctx.dueTodayHomework.length;
+  const closeTest = ctx.tests.find((t) => daysUntil(t.exam_date) <= 1);
+
+  if (urgent > 0 || closeTest) {
+    const reasons: string[] = [];
+    if (ctx.dueTodayHomework.length > 0) reasons.push(`${ctx.dueTodayHomework[0].title} is due today`);
+    if (ctx.overdueHomework.length > 0) reasons.push(`${ctx.overdueHomework.length} overdue homework`);
+    if (closeTest) reasons.push(`${closeTest.title} is ${daysUntil(closeTest.exam_date) === 0 ? 'today' : 'tomorrow'}`);
+    return { text: `I'd normally say go for it, but ${reasons.join(' and ')}. I'd at least get that done — then you can properly relax without it hanging over you. If you really want to leave it, tell me and I will.` };
+  }
+
+  return { text: `Go for it. Nothing urgent needs doing tonight — rest is a legitimate use of time. I won't fill your evening with busywork.` };
+}
+
+function handleGoingToBed(ctx: LifeContext): AIResponse {
+  const pending: string[] = [];
+  if (ctx.dueTodayHomework.length > 0) pending.push(`${ctx.dueTodayHomework.length} homework due today`);
+  if (ctx.overdueHomework.length > 0) pending.push(`${ctx.overdueHomework.length} overdue`);
+  const tmrwImportant = ctx.tomorrowHomework.length > 0 || ctx.tests.some((t) => daysUntil(t.exam_date) === 1);
+
+  if (pending.length > 0) {
+    return { text: `Before you head off — you have ${pending.join(' and ')}. Want me to move it to tomorrow, or are you leaving it intentionally?` };
+  }
+  const bedtime = ctx.settings?.bedtime || '22:30';
+  const bedMin = timeToMinutes(bedtime);
+  const diff = Math.round((bedMin - ctx.currentMinutes) / 60 * 10) / 10;
+  if (diff > 0 && diff < 2) {
+    return { text: `Good — you've got about ${diff < 0.5 ? '30 minutes' : `${Math.round(diff * 60)} minutes`} until your target bedtime of ${fmtTimeShort(bedtime)}. ${tmrwImportant ? 'Tomorrow has a few things on, so the rest will help.' : 'Tomorrow looks manageable. Sleep well.'}` };
+  }
+  return { text: `${tmrwImportant ? 'Tomorrow has a few things coming up, so good call on getting rest.' : 'Nothing urgent tomorrow. Sleep well.'}` };
 }
 
 export { needsConfirmation };
