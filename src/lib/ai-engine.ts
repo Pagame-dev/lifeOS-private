@@ -7,6 +7,7 @@ import type {
   AIAction, ActionResult,
 } from './ai-actions';
 import { executeAction, needsConfirmation } from './ai-actions';
+import { pickVariation, confidencePhrase, greetingPrefix, emptyDayPhrase, focusSuggestionPhrase } from './ai-variation';
 import { supabase } from '@/lib/supabase';
 import type { Homework, Task, TestExam, Workout, TimetableEvent, AIMemory } from '@/lib/types';
 
@@ -175,6 +176,9 @@ export async function processMessage(userMessage: string, ctx: LifeContext): Pro
     case 'going_bed':
       response = handleGoingToBed(ctx);
       break;
+    case 'override_event':
+      response = await handleOverrideEvent(intent, ctx);
+      break;
     default:
       response = handleFallback(ctx);
   }
@@ -290,6 +294,18 @@ function detectIntent(q: string, conv: ConversationState, _ctx: LifeContext): De
   if (/forget that|never mind|cancel that|actually don'?t/.test(q)) return { type: 'forget' };
   if (/free time|free period|spare time|gap|break/.test(q)) return { type: 'free_time' };
 
+  if (/(cancel|don'?t have|no|skip).*(tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday)/.test(q) && /(class|lesson|biology|chemistry|physics|maths?|english|history|geography|french|spanish|german|economics|logop)/.test(q)) {
+    const dateMatch = q.match(/(tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday)/);
+    const eventMatch = q.match(/(biology|chemistry|physics|maths?|english|history|geography|french|spanish|german|economics|logop\w*|class|lesson)/i);
+    return { type: 'override_event', data: { actionType: 'cancelled', dateWord: dateMatch?.[1] || 'tomorrow', eventTitle: eventMatch?.[1] || '' } };
+  }
+  if (/(moved?|different|change|new room|instead of|replace).*(room|class|lesson|biology|chemistry|physics|maths?|english|history|geography)/.test(q)) {
+    const dateMatch = q.match(/(tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday)/);
+    const eventMatch = q.match(/(biology|chemistry|physics|maths?|english|history|geography|french|spanish|german|economics)/i);
+    const roomMatch = q.match(/room\s+(\w+)/i);
+    return { type: 'override_event', data: { actionType: 'modified', dateWord: dateMatch?.[1] || 'tomorrow', eventTitle: eventMatch?.[1] || '', newRoom: roomMatch?.[1] || '' } };
+  }
+
   return { type: 'fallback' };
 }
 
@@ -386,23 +402,20 @@ function getNextFreeSlot(ctx: LifeContext, afterMinutes: number): { start: numbe
 
 function handleGreeting(ctx: LifeContext): AIResponse {
   const time = ctx.currentMinutes;
-  let timeGreeting = 'Hey';
-  if (time < 12 * 60) timeGreeting = 'Good morning';
-  else if (time < 17 * 60) timeGreeting = 'Good afternoon';
-  else timeGreeting = 'Good evening';
-
   const namePref = ctx.explicitPreferences.find((m) => m.pattern_key === 'greeting_style');
-  if (namePref && namePref.pattern_value === 'casual') timeGreeting = 'Hey';
+  const casual = namePref?.pattern_value === 'casual';
+  const timeGreeting = greetingPrefix(time, casual);
+  const turnCount = state.turns.length;
 
   if (ctx.currentEvent) {
     return { text: `${timeGreeting}! You're in ${ctx.currentEvent.title} right now — it ends at ${fmtTime(ctx.currentEvent.end_time)}.${ctx.nextEvent ? ` After that, ${ctx.nextEvent.title} at ${fmtTime(ctx.nextEvent.start_time)}.` : ''} What can I help with?` };
   }
   if (ctx.nextEvent) {
     const gap = timeToMinutes(ctx.nextEvent.start_time) - ctx.currentMinutes;
-    if (gap > 30) return { text: `${timeGreeting}! You're free until ${fmtTime(ctx.nextEvent.start_time)} when you have ${ctx.nextEvent.title}. Plenty of time — want me to suggest what to focus on?` };
+    if (gap > 30) return { text: `${timeGreeting}! You're free until ${fmtTime(ctx.nextEvent.start_time)} when you have ${ctx.nextEvent.title}. Plenty of time — ${pickVariation(['want me to suggest what to focus on?', 'should I prioritise things?', 'want me to work out what matters most?'], { currentMinutes: time, turnCount })}` };
     return { text: `${timeGreeting}! Next up is ${ctx.nextEvent.title} at ${fmtTime(ctx.nextEvent.start_time)}${ctx.nextEvent.room ? ` in room ${ctx.nextEvent.room}` : ''}.` };
   }
-  return { text: `${timeGreeting}! Nothing scheduled for the rest of today. ${ctx.homework.length > 0 || ctx.tasks.length > 0 ? 'You have some work to do though — want me to prioritise?' : 'Looks like a clean day. Enjoy it!'}` };
+  return { text: `${timeGreeting}! Nothing scheduled for the rest of today. ${ctx.homework.length > 0 || ctx.tasks.length > 0 ? `You have some work to do though — ${focusSuggestionPhrase()}` : emptyDayPhrase()}` };
 }
 
 function handleHelp(): AIResponse {
@@ -878,19 +891,27 @@ function handleFallback(ctx: LifeContext): AIResponse {
   const lastTurn = state.turns[state.turns.length - 1];
   if (lastTurn && state.turns.length > 0) {
     if (/^(yes|yeah|ok|sure|sounds good|do that|that works|agreed)$/.test(lastTurn.userMessage.toLowerCase().trim())) {
-      return { text: `Is there something specific you'd like me to help with? I can prioritise your day, check homework, plan revision, or take actions like moving tasks.` };
+      return { text: pickVariation([
+        'Is there something specific you want me to help with? I can prioritise your day, check homework, plan revision, or move tasks.',
+        'What would you like to do next? I can look at your priorities, homework, revision, or schedule.',
+        'Alright. Tell me what you want to tackle — or I can help you work out where to start.',
+      ]) };
     }
   }
   if (ctx.learnedPatterns.length > 0 && state.turns.length === 0) {
     const topPattern = ctx.learnedPatterns[0];
     if (topPattern.confidence_score >= 0.5) {
-      return { text: `I'm here to help with your day. I've noticed ${topPattern.pattern_value.toLowerCase()} — want me to keep that in mind when planning? You can also ask me "what should I focus on?", "plan my evening", or "do I have any tests?".` };
+      return { text: `I'm here to help with your day. ${confidencePhrase(topPattern.confidence_score)} ${topPattern.pattern_value.toLowerCase()} — want me to keep that in mind when planning? You can also ask me what to focus on or what you've got coming up.` };
     }
   }
   if (ctx.currentEvent) {
-    return { text: `I'm not sure what you mean, but I can see you're in ${ctx.currentEvent.title} right now. Try asking me "what should I focus on?", "do I have homework?", or "plan my evening".` };
+    return { text: `I'm not sure what you mean, but you're in ${ctx.currentEvent.title} right now. ${pickVariation(['Try asking what to focus on, whether you have homework, or how to plan your evening.', 'You can ask what comes next, check your homework, or plan the rest of the day.'])}` };
   }
-  return { text: `I'm here to help with your day. Try asking "what should I focus on?", "plan my evening", "do I have any tests?", or "add a task for tomorrow".` };
+  return { text: pickVariation([
+    'I can help with your day. Ask what to focus on, plan your evening, check upcoming tests, or add something for tomorrow.',
+    'Tell me what you need — priorities, homework, revision, planning, or a new task are all fair game.',
+    'What are you trying to sort out? I can look at your schedule and help you decide what makes sense.',
+  ]) };
 }
 
 function handleWhy(_ctx: LifeContext): AIResponse {
@@ -1025,3 +1046,61 @@ function handleGoingToBed(ctx: LifeContext): AIResponse {
 }
 
 export { needsConfirmation };
+
+async function handleOverrideEvent(intent: DetectedIntent, ctx: LifeContext): Promise<AIResponse> {
+  const actionType = intent.data?.actionType as string;
+  const dateWord = intent.data?.dateWord as string;
+  const eventTitleRaw = intent.data?.eventTitle as string;
+  const newRoom = intent.data?.newRoom as string | undefined;
+  const overrideDate = resolveDateWord(dateWord);
+
+  if (!eventTitleRaw) {
+    return { text: `Which class or event do you mean? Tell me the subject name and I'll sort it out.` };
+  }
+
+  const eventTitle = eventTitleRaw.charAt(0).toUpperCase() + eventTitleRaw.slice(1);
+  const targetEvents = dateWord === 'tomorrow' ? ctx.tomorrowEvents : ctx.todayEvents;
+  const match = targetEvents.find((e) => e.title.toLowerCase().includes(eventTitleRaw.toLowerCase()));
+
+  if (!match) {
+    const allEventNames = targetEvents.map((e) => e.title).join(', ');
+    return { text: `I don't see ${eventTitle} on ${dateWord}'s schedule.${allEventNames ? ` I have: ${allEventNames}.` : ' There\'s nothing scheduled that day.'} Double-check the name?` };
+  }
+
+  if (actionType === 'cancelled') {
+    const action: AIAction = {
+      type: 'create_override',
+      label: `Cancel ${eventTitle} on ${fmtRelativeDate(overrideDate)}`,
+      data: { overrideDate, eventTitle: match.title, actionType: 'cancelled' },
+    };
+    const result = await executeAction(action);
+    return {
+      text: result.success
+        ? `Done — I've cancelled ${match.title} for ${fmtRelativeDate(overrideDate)} only. The recurring timetable hasn't changed; it'll be back to normal next week.`
+        : `I couldn't do that: ${result.message}`,
+      actionResults: [result],
+    };
+  }
+
+  if (actionType === 'modified') {
+    const action: AIAction = {
+      type: 'create_override',
+      label: `Update ${eventTitle} on ${fmtRelativeDate(overrideDate)}`,
+      data: {
+        overrideDate,
+        eventTitle: match.title,
+        actionType: 'modified',
+        newRoom: newRoom || undefined,
+      },
+    };
+    const result = await executeAction(action);
+    return {
+      text: result.success
+        ? `Done — ${match.title} on ${fmtRelativeDate(overrideDate)}${newRoom ? ` is now in Room ${newRoom}` : ' has been updated'}. This only affects that day — the recurring schedule is unchanged.`
+        : `I couldn't do that: ${result.message}`,
+      actionResults: [result],
+    };
+  }
+
+  return { text: `I can cancel or modify a specific day's class. What would you like to do with ${match.title}?` };
+}

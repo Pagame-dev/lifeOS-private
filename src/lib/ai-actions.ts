@@ -1,5 +1,6 @@
 import { supabase } from '@/lib/supabase';
 import { todayKey, addDays, timeToMinutes, fmtTime, fmtRelativeDate } from './ai-context';
+import { observeTaskCompletion, observeWorkoutDecision, observeTaskReschedule } from './ai-observe';
 import type { Homework, Task, Workout } from '@/lib/types';
 
 export interface ActionResult {
@@ -60,17 +61,48 @@ export async function executeAction(action: AIAction): Promise<ActionResult> {
         action.data?.dueDate as string,
         4,
       );
+    case 'create_override':
+      return createOverride(
+        action.data?.overrideDate as string,
+        action.data?.eventTitle as string,
+        action.data?.actionType as string,
+        action.data?.newRoom as string | undefined,
+        action.data?.newStartTime as string | undefined,
+        action.data?.newEndTime as string | undefined,
+        action.data?.newTitle as string | undefined,
+        action.data?.reason as string | undefined,
+      );
+    case 'delete_override':
+      return deleteOverride(action.entityId!);
+    case 'save_memory':
+      return saveMemory(
+        action.data?.memoryType as string,
+        action.data?.patternKey as string,
+        action.data?.patternValue as string,
+        action.data?.confidenceScore as number | undefined,
+        action.data?.isTemporary as boolean | undefined,
+        action.data?.expiresAt as string | undefined,
+      );
+    case 'delete_memory':
+      return deleteMemory(action.entityId!);
     default:
       return { success: false, message: 'Unknown action' };
   }
 }
 
 async function completeTask(id: string): Promise<ActionResult> {
+  const { data: taskData } = await supabase
+    .from('tasks')
+    .select('due_date')
+    .eq('id', id)
+    .maybeSingle();
   const { error } = await supabase
     .from('tasks')
     .update({ status: 'done', completed_at: new Date().toISOString() })
     .eq('id', id);
   if (error) return { success: false, message: error.message };
+  const wasOnTime = taskData ? !((taskData as { due_date: string | null }).due_date && new Date((taskData as { due_date: string }).due_date) < new Date())) : true;
+  observeTaskCompletion(id, wasOnTime);
   return { success: true, message: 'Task marked complete', action: 'complete_task', entityId: id };
 }
 
@@ -89,6 +121,7 @@ async function completeWorkout(id: string): Promise<ActionResult> {
     .update({ status: 'completed', completed_at: new Date().toISOString() })
     .eq('id', id);
   if (error) return { success: false, message: error.message };
+  observeWorkoutDecision(id, 'completed');
   return { success: true, message: 'Workout marked complete', action: 'complete_workout', entityId: id };
 }
 
@@ -98,6 +131,7 @@ async function skipWorkout(id: string, reason?: string): Promise<ActionResult> {
     .update({ status: 'skipped', skip_reason: reason || 'Skipped via AI assistant' })
     .eq('id', id);
   if (error) return { success: false, message: error.message };
+  observeWorkoutDecision(id, 'skipped');
   return { success: true, message: 'Workout skipped', action: 'skip_workout', entityId: id };
 }
 
@@ -113,11 +147,18 @@ async function moveHomework(id: string, newDueDate: string): Promise<ActionResul
 
 async function moveTask(id: string, newDueDate: string): Promise<ActionResult> {
   if (!newDueDate) return { success: false, message: 'No date provided' };
+  const { data: oldData } = await supabase
+    .from('tasks')
+    .select('due_date')
+    .eq('id', id)
+    .maybeSingle();
   const { error } = await supabase
     .from('tasks')
     .update({ due_date: newDueDate })
     .eq('id', id);
   if (error) return { success: false, message: error.message };
+  const oldDue = (oldData as { due_date: string | null })?.due_date;
+  if (oldDue) observeTaskReschedule(id, oldDue, newDueDate);
   return { success: true, message: `Task moved to ${fmtRelativeDate(newDueDate)}`, action: 'move_task', entityId: id };
 }
 
@@ -187,5 +228,105 @@ async function deleteHomework(id: string): Promise<ActionResult> {
 }
 
 export function needsConfirmation(actionType: string): boolean {
-  return ['delete_task', 'delete_homework'].includes(actionType);
+  return ['delete_task', 'delete_homework', 'delete_override', 'delete_memory'].includes(actionType);
+}
+
+async function createOverride(
+  overrideDate: string,
+  eventTitle: string,
+  actionType: string,
+  newRoom?: string,
+  newStartTime?: string,
+  newEndTime?: string,
+  newTitle?: string,
+  reason?: string,
+): Promise<ActionResult> {
+  if (!overrideDate || !eventTitle || !actionType) {
+    return { success: false, message: 'Missing override details' };
+  }
+  const { data, error } = await supabase
+    .from('schedule_overrides')
+    .insert({
+      override_date: overrideDate,
+      event_title: eventTitle,
+      action_type: actionType,
+      new_room: newRoom || null,
+      new_start_time: newStartTime || null,
+      new_end_time: newEndTime || null,
+      new_title: newTitle || null,
+      reason: reason || null,
+    })
+    .select('*')
+    .single();
+  if (error) return { success: false, message: error.message };
+  const id = (data as { id: string })?.id;
+  const label = actionType === 'cancelled'
+    ? `${eventTitle} cancelled on ${fmtRelativeDate(overrideDate)}`
+    : actionType === 'replaced'
+    ? `${eventTitle} replaced on ${fmtRelativeDate(overrideDate)}`
+    : `${eventTitle} modified on ${fmtRelativeDate(overrideDate)}`;
+  return { success: true, message: label, action: 'create_override', entityId: id };
+}
+
+async function deleteOverride(id: string): Promise<ActionResult> {
+  const { error } = await supabase.from('schedule_overrides').delete().eq('id', id);
+  if (error) return { success: false, message: error.message };
+  return { success: true, message: 'Override removed — recurring schedule restored', action: 'delete_override', entityId: id };
+}
+
+async function saveMemory(
+  memoryType: string,
+  patternKey: string,
+  patternValue: string,
+  confidenceScore?: number,
+  isTemporary?: boolean,
+  expiresAt?: string,
+): Promise<ActionResult> {
+  if (!memoryType || !patternKey || !patternValue) {
+    return { success: false, message: 'Missing memory details' };
+  }
+  const existing = await supabase
+    .from('ai_memories')
+    .select('id, observation_count, confidence_score')
+    .eq('pattern_key', patternKey)
+    .maybeSingle();
+
+  if (existing.data) {
+    const row = existing.data as { id: string; observation_count: number; confidence_score: number };
+    const newCount = row.observation_count + 1;
+    const newConfidence = Math.min(1.0, row.confidence_score + 0.15);
+    const { error } = await supabase
+      .from('ai_memories')
+      .update({
+        observation_count: newCount,
+        confidence_score: confidenceScore ?? newConfidence,
+        last_observed: new Date().toISOString(),
+        pattern_value: patternValue,
+      })
+      .eq('id', row.id);
+    if (error) return { success: false, message: error.message };
+    return { success: true, message: 'Memory updated', action: 'save_memory', entityId: row.id };
+  }
+
+  const { data, error } = await supabase
+    .from('ai_memories')
+    .insert({
+      memory_type: memoryType,
+      pattern_key: patternKey,
+      pattern_value: patternValue,
+      confidence_score: confidenceScore ?? 0.2,
+      observation_count: 1,
+      is_temporary: isTemporary ?? false,
+      expires_at: expiresAt || null,
+    })
+    .select('*')
+    .single();
+  if (error) return { success: false, message: error.message };
+  return { success: true, message: 'Memory saved', action: 'save_memory', entityId: (data as { id: string })?.id };
+}
+
+async function deleteMemory(id: string): Promise<ActionResult> {
+  const { error } = await supabase.from('ai_memories').delete().eq('id', id);
+  if (error) return { success: false, message: error.message };
+  return { success: true, message: 'Memory forgotten', action: 'delete_memory', entityId: id };
 }

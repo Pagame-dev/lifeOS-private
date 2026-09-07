@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ChevronLeft, ChevronRight, Plus, X, Trash2, Dumbbell, BookOpen, Calendar, Clock } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-import type { Holiday, Subject, TimetableEvent, Workout, LogopedeSession, Homework, Task } from '@/lib/types';
+import type { Holiday, Subject, TimetableEvent, Workout, LogopedeSession, Homework, Task, ScheduleOverride } from '@/lib/types';
 
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const DAY_INDICES = [1, 2, 3, 4, 5, 6, 0];
@@ -24,7 +24,7 @@ function fmtTimeShort(time: string): string {
   return m === 0 ? `${displayHour}${suffix}` : `${displayHour}:${String(m).padStart(2, '0')}${suffix}`;
 }
 
-type EventSlot = { kind: 'event'; data: TimetableEvent; start_time: string; end_time: string };
+type EventSlot = { kind: 'event'; data: TimetableEvent; start_time: string; end_time: string; overrideLabel?: string };
 type WorkoutSlot = { kind: 'workout'; data: Workout; start_time: string; end_time: string };
 type LogopedeSlot = { kind: 'logopede'; data: LogopedeSession; start_time: string; end_time: string };
 type Slot = EventSlot | WorkoutSlot | LogopedeSlot;
@@ -74,6 +74,7 @@ export function Schedule() {
   const [holidays, setHolidays] = useState<Holiday[]>([]);
   const [workouts, setWorkouts] = useState<Workout[]>([]);
   const [logopedeSessions, setLogopedeSessions] = useState<LogopedeSession[]>([]);
+  const [overrides, setOverrides] = useState<ScheduleOverride[]>([]);
   const [loading, setLoading] = useState(true);
   const [now, setNow] = useState(new Date());
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
@@ -102,12 +103,13 @@ export function Schedule() {
   async function loadData() {
     const weekStartKey = dateKey(weekDates[0]);
     const weekEndKey = dateKey(weekDates[6]);
-    const [eventsRes, subjectsRes, holidaysRes, workoutsRes, logopedeRes] = await Promise.all([
+    const [eventsRes, subjectsRes, holidaysRes, workoutsRes, logopedeRes, overridesRes] = await Promise.all([
       supabase.from('timetable_events').select('*'),
       supabase.from('subjects').select('*'),
       supabase.from('holidays').select('*').gte('date', weekStartKey).lte('date', weekEndKey),
       supabase.from('workouts').select('*').gte('scheduled_date', weekStartKey).lte('scheduled_date', weekEndKey),
       supabase.from('logopede_sessions').select('*').gte('session_date', weekStartKey).lte('session_date', weekEndKey),
+      supabase.from('schedule_overrides').select('*').gte('override_date', weekStartKey).lte('override_date', weekEndKey),
     ]);
 
     setEvents((eventsRes.data as TimetableEvent[]) || []);
@@ -115,6 +117,7 @@ export function Schedule() {
     setHolidays((holidaysRes.data as Holiday[]) || []);
     setWorkouts((workoutsRes.data as Workout[]) || []);
     setLogopedeSessions((logopedeRes.data as LogopedeSession[]) || []);
+    setOverrides((overridesRes.data as ScheduleOverride[]) || []);
     setLoading(false);
   }
 
@@ -125,7 +128,9 @@ export function Schedule() {
   function getSlotsForDay(day: number, date: Date): Slot[] {
     const isHoliday = displayedHolidayKeys.has(dateKey(date));
     const dateKeyStr = dateKey(date);
-    const dayEvents: EventSlot[] = events
+    const dayOverrides = overrides.filter((o) => o.override_date === dateKeyStr);
+
+    let dayEvents: EventSlot[] = events
       .filter((event) => {
         if (event.day_of_week !== day) return false;
         if (event.is_school_lesson && isHoliday) return false;
@@ -133,6 +138,29 @@ export function Schedule() {
         return event.week_type === weekType;
       })
       .map((e) => ({ kind: 'event' as const, data: e, start_time: e.start_time, end_time: e.end_time }));
+
+    dayEvents = dayEvents.filter((slot) => {
+      const matchingOverride = dayOverrides.find(
+        (o) => o.event_title.toLowerCase() === slot.data.title.toLowerCase() && o.action_type === 'cancelled',
+      );
+      return !matchingOverride;
+    });
+
+    dayEvents = dayEvents.map((slot) => {
+      const mod = dayOverrides.find(
+        (o) => o.event_title.toLowerCase() === slot.data.title.toLowerCase() && o.action_type === 'modified',
+      );
+      if (mod) {
+        return {
+          kind: 'event' as const,
+          data: { ...slot.data, room: mod.new_room ?? slot.data.room, title: mod.new_title ?? slot.data.title },
+          start_time: mod.new_start_time ?? slot.start_time,
+          end_time: mod.new_end_time ?? slot.end_time,
+          overrideLabel: 'Today only',
+        };
+      }
+      return slot;
+    });
 
     const dayWorkouts: WorkoutSlot[] = workouts
       .filter((w) => w.scheduled_date === dateKeyStr)
@@ -431,6 +459,9 @@ function SlotCard({ slot, onEditEvent, onEditWorkout, getSubjectColor }: {
           {fmtTimeShort(slot.start_time)} – {fmtTimeShort(slot.end_time)}
         </p>
         {height > 48 && event.room && <p className="truncate text-[10px] text-cream-dim/50 mt-0.5">{event.room}</p>}
+        {slot.kind === 'event' && slot.overrideLabel && (
+          <p className="text-[9px] text-accent-warm/80 mt-0.5 font-medium">{slot.overrideLabel}</p>
+        )}
       </button>
     );
   }
