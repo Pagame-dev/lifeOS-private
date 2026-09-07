@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { Sparkles, X, Send, MessageCircle, Check, Trash2, Calendar, AlertCircle } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { buildContext } from '@/lib/ai-context';
-import { processMessage, resetConversation, getConversationHistory, needsConfirmation, executeAction } from '@/lib/ai-engine';
+import { processMessage, resetConversation, needsConfirmation } from '@/lib/ai-engine';
 import { executeAction as execAction } from '@/lib/ai-actions';
 import type { AIAction, ActionResult } from '@/lib/ai-actions';
 import type { AIChatMessage } from '@/lib/types';
