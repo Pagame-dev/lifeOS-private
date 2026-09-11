@@ -21,6 +21,8 @@
     font-family: 'Outfit', system-ui, -apple-system, sans-serif;
     line-height: 1.5;
     overflow-x: hidden;
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior-y: none;
   }
 
   ::selection {

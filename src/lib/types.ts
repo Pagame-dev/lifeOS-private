@@ -47,6 +47,7 @@ export interface UserSettings {
   logopede_evening_time: string;
   logopede_duration_min: number;
   notification_interval_min: number;
+  timezone: string;
   created_at: string;
   updated_at: string;
 }
@@ -398,6 +399,14 @@ export interface NotificationPreferences {
   quiet_hours_enabled: boolean;
   quiet_hours_start: string;
   quiet_hours_end: string;
+  notifications_master_enabled: boolean;
+  events_enabled: boolean;
+  homework_enabled: boolean;
+  tests_enabled: boolean;
+  routines_enabled: boolean;
+  workout_enabled: boolean;
+  daily_briefing_enabled: boolean;
+  daily_briefing_time: string;
   created_at: string;
   updated_at: string;
 }
@@ -455,6 +464,39 @@ export interface VoiceSettings {
   voice_when_type: boolean;
   text_when_speak: boolean;
   voice_when_speak: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PushSubscription {
+  id: string;
+  user_id: string;
+  endpoint: string;
+  p256dh: string;
+  auth_key: string;
+  device_label: string;
+  user_agent: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export type NotificationJobStatus = 'pending' | 'sent' | 'cancelled' | 'failed';
+
+export interface NotificationJob {
+  id: string;
+  user_id: string;
+  notification_type: string;
+  category: string;
+  title: string;
+  body: string;
+  related_entity_type: string;
+  related_entity_id: string | null;
+  scheduled_for: string;
+  sent_at: string | null;
+  status: NotificationJobStatus;
+  dedup_key: string;
+  deep_link: string;
   created_at: string;
   updated_at: string;
 }

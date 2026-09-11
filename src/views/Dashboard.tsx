@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Bell, Settings, Clock, ChevronRight, Sparkles, Moon, BookOpen, AlertCircle, CheckSquare } from 'lucide-react';
+import { Bell, Settings, Clock, ChevronRight, Sparkles, Moon, BookOpen, AlertCircle, CheckSquare, Plus, Mic, CalendarDays, CheckCircle2 } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
 import type { Holiday, TimetableEvent, Homework, TestExam, Task, Routine } from '@/lib/types';
@@ -158,6 +158,53 @@ export function Dashboard({ onNavigate }: DashboardProps) {
             className="p-2 rounded-lg text-cream-dim hover:text-cream hover:bg-white/[0.03] transition-colors"
           >
             <Settings size={18} />
+          </button>
+        </div>
+      </div>
+
+      {/* Mobile Now/Next hero */}
+      <div className="md:hidden">
+        {!loading && (currentEvent || nextEvent) && (
+          <div className="fluorescent-card p-4 space-y-3">
+            {currentEvent && (
+              <div>
+                <p className="text-[10px] uppercase tracking-wider text-sage-300 mb-1">Now</p>
+                <p className="text-lg font-display text-cream">{currentEvent.title}</p>
+                <p className="text-xs text-cream-dim mt-0.5">
+                  until {formatTime(currentEvent.end_time)}
+                  {currentEvent.room && ` · Room ${currentEvent.room}`}
+                </p>
+              </div>
+            )}
+            {nextEvent && (
+              <div className={currentEvent ? 'pt-2 border-t border-white/[0.06]' : ''}>
+                <p className="text-[10px] uppercase tracking-wider text-cream-dim mb-1">Next</p>
+                <p className="text-sm font-medium text-cream">{nextEvent.title}</p>
+                <p className="text-xs text-cream-dim mt-0.5">at {formatTime(nextEvent.start_time)}</p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Mobile quick actions */}
+        <div className="flex items-center gap-2 mt-3 overflow-x-auto pb-1">
+          <button
+            onClick={() => onNavigate('tasks')}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/[0.04] border border-white/[0.06] text-xs text-cream-dim whitespace-nowrap active:scale-95 transition-transform"
+          >
+            <CheckCircle2 size={14} /> Tasks
+          </button>
+          <button
+            onClick={() => onNavigate('schedule')}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/[0.04] border border-white/[0.06] text-xs text-cream-dim whitespace-nowrap active:scale-95 transition-transform"
+          >
+            <CalendarDays size={14} /> Timetable
+          </button>
+          <button
+            onClick={() => onNavigate('more')}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/[0.04] border border-white/[0.06] text-xs text-cream-dim whitespace-nowrap active:scale-95 transition-transform"
+          >
+            <Bell size={14} /> Notifications
           </button>
         </div>
       </div>

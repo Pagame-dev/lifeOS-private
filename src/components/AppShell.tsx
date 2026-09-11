@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Home, CalendarDays, CheckSquare, BarChart3, MoreHorizontal, Bell, Settings, Plus } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
 import { Dashboard } from '@/views/Dashboard';
@@ -9,6 +9,9 @@ import { More } from '@/views/More';
 import { QuickAddModal } from '@/components/QuickAddModal';
 import { AIChat, AIChatButton } from '@/components/AIChat';
 import { NotificationPanel, NotificationToasts, useSmartNotifications } from '@/components/Notifications';
+import { InstallInstructions, shouldShowInstallPrompt } from '@/components/InstallInstructions';
+import { useNotificationScheduler } from '@/lib/use-notification-scheduler';
+import { setBadge, clearBadge } from '@/lib/push-manager';
 
 type View = 'home' | 'schedule' | 'tasks' | 'statistics' | 'more';
 
@@ -20,6 +23,20 @@ const navItems: { id: View; label: string; icon: typeof Home }[] = [
   { id: 'more', label: 'More', icon: MoreHorizontal },
 ];
 
+function parseDeepLink(url: string): View | null {
+  try {
+    const u = new URL(url, window.location.origin);
+    const params = u.searchParams;
+    const view = params.get('view');
+    if (view && ['home', 'schedule', 'tasks', 'statistics', 'more'].includes(view)) {
+      return view as View;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export function AppShell() {
   const { profile } = useAuth();
   const [view, setView] = useState<View>('home');
@@ -27,6 +44,36 @@ export function AppShell() {
   const [chatOpen, setChatOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   const { unreadCount } = useSmartNotifications();
+  useNotificationScheduler();
+
+  // Handle deep link from URL on initial load
+  useEffect(() => {
+    const deepView = parseDeepLink(window.location.href);
+    if (deepView) setView(deepView);
+  }, []);
+
+  // Handle deep link from service worker notification click
+  useEffect(() => {
+    const handler = (event: MessageEvent) => {
+      if (event.data?.type === 'NOTIFICATION_CLICK' && event.data?.data) {
+        const deepView = parseDeepLink(event.data.data.url || '/');
+        if (deepView) setView(deepView);
+      }
+    };
+    navigator.serviceWorker?.addEventListener('message', handler);
+    return () => navigator.serviceWorker?.removeEventListener('message', handler);
+  }, []);
+
+  // Update badge based on unread count
+  useEffect(() => {
+    if (unreadCount > 0) {
+      setBadge(Math.min(unreadCount, 99));
+    } else {
+      clearBadge();
+    }
+  }, [unreadCount]);
+
+  const showInstall = shouldShowInstallPrompt();
 
   return (
     <div className="min-h-screen bg-charcoal-950 flex flex-col">
@@ -82,7 +129,7 @@ export function AppShell() {
       </aside>
 
       {/* Mobile top bar */}
-      <header className="md:hidden fixed top-0 left-0 right-0 z-40 bg-charcoal-950/80 backdrop-blur-lg border-b border-white/[0.04]">
+      <header className="md:hidden fixed top-0 left-0 right-0 z-40 bg-charcoal-950/80 backdrop-blur-lg border-b border-white/[0.04]" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
         <div className="flex items-center justify-between px-4 py-3">
           <div className="flex items-center gap-2">
             <div className="w-7 h-7 rounded-md bg-sage-500/10 border border-sage-500/20 flex items-center justify-center">
@@ -119,8 +166,13 @@ export function AppShell() {
       </button>
 
       {/* Main content */}
-      <main className="flex-1 md:ml-60 pt-16 md:pt-0 pb-20 md:pb-0">
+      <main className="flex-1 md:ml-60 pt-16 md:pt-0 pb-20 md:pb-0" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
         <div className="max-w-6xl mx-auto px-4 md:px-8 py-6 md:py-8 animate-fade-in">
+          {showInstall && view === 'home' && (
+            <div className="mb-4">
+              <InstallInstructions />
+            </div>
+          )}
           {view === 'home' && <Dashboard onNavigate={setView} />}
           {view === 'schedule' && <Schedule />}
           {view === 'tasks' && <Tasks />}
@@ -130,7 +182,7 @@ export function AppShell() {
       </main>
 
       {/* Mobile bottom nav */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-charcoal-950/90 backdrop-blur-lg border-t border-white/[0.06]">
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-charcoal-950/90 backdrop-blur-lg border-t border-white/[0.06]" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
         <div className="flex items-center justify-around px-2 py-2">
           {navItems.map((item) => {
             const Icon = item.icon;
@@ -155,6 +207,7 @@ export function AppShell() {
       <button
         onClick={() => setQuickAddOpen(true)}
         className="md:hidden fixed bottom-20 right-4 z-40 w-12 h-12 rounded-full bg-sage-500/20 border border-sage-500/30 flex items-center justify-center text-sage-200 shadow-lg shadow-sage-500/10 active:scale-95 transition-transform"
+        style={{ bottom: 'calc(5rem + env(safe-area-inset-bottom))' }}
       >
         <Plus size={22} />
       </button>

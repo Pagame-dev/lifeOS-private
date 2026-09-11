@@ -12,6 +12,7 @@ import { Notes } from '@/views/Notes';
 import { DailyLogView } from '@/views/DailyLog';
 import { Statistics } from '@/views/Statistics';
 import type { AIMemory, VoiceSettings } from '@/lib/types';
+import { PushNotificationSettings } from '@/components/PushNotificationSettings';
 
 type Section =
   | 'menu'
@@ -92,7 +93,7 @@ export function More() {
         {section === 'notes' && <Notes />}
         {section === 'dailylog' && <DailyLogView />}
         {section === 'statistics' && <Statistics />}
-        {section === 'notifications' && <NotificationSettings />}
+        {section === 'notifications' && <PushNotificationSettings />}
         {section === 'sleep' && <SleepSettings />}
       </div>
     );
@@ -519,69 +520,6 @@ function AIPersonalisationSettings() {
         </div>
 
         {saving && <p className="text-[11px] text-cream-dim/50">Saving...</p>}
-      </div>
-    </div>
-  );
-}
-
-function NotificationSettings() {
-  const { user } = useAuth();
-  const [prefs, setPrefs] = useState<Record<string, unknown>>({});
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    supabase
-      .from('notification_preferences')
-      .select('*')
-      .eq('user_id', user!.id)
-      .maybeSingle()
-      .then(({ data }) => {
-        if (data) setPrefs(data as Record<string, unknown>);
-        setLoading(false);
-      });
-  }, [user]);
-
-  async function handleSave() {
-    setSaving(true);
-    await supabase.from('notification_preferences').update(prefs).eq('user_id', user!.id);
-    setSaving(false);
-  }
-
-  if (loading) return <div className="glass-card h-40 animate-pulse" />;
-
-  const toggles = [
-    { key: 'important_enabled', label: 'Important notifications' },
-    { key: 'upcoming_enabled', label: 'Upcoming reminders' },
-    { key: 'ai_intervention_enabled', label: 'AI interventions' },
-    { key: 'summary_enabled', label: 'Daily summaries' },
-    { key: 'bedtime_preview_enabled', label: 'Bedtime tomorrow preview' },
-    { key: 'quiet_hours_enabled', label: 'Quiet hours' },
-  ];
-
-  return (
-    <div className="space-y-4">
-      <h2 className="font-display text-xl text-cream">Notifications</h2>
-      <div className="glass-card p-5 space-y-3">
-        {toggles.map((toggle) => (
-          <label key={toggle.key} className="flex items-center justify-between cursor-pointer">
-            <span className="text-sm text-cream-dim">{toggle.label}</span>
-            <input type="checkbox" checked={(prefs[toggle.key] as boolean) ?? true} onChange={(e) => setPrefs({ ...prefs, [toggle.key]: e.target.checked })} className="accent-sage-500" />
-          </label>
-        ))}
-        <div className="grid grid-cols-2 gap-3 pt-2">
-          <div>
-            <label className="block text-xs text-cream-dim mb-1.5">Quiet Start</label>
-            <input type="time" value={(prefs.quiet_hours_start as string) || '22:00'} onChange={(e) => setPrefs({ ...prefs, quiet_hours_start: e.target.value })} className="input-field" />
-          </div>
-          <div>
-            <label className="block text-xs text-cream-dim mb-1.5">Quiet End</label>
-            <input type="time" value={(prefs.quiet_hours_end as string) || '07:00'} onChange={(e) => setPrefs({ ...prefs, quiet_hours_end: e.target.value })} className="input-field" />
-          </div>
-        </div>
-        <button onClick={handleSave} disabled={saving} className="w-full btn-primary py-2.5 disabled:opacity-50">
-          {saving ? 'Saving...' : 'Save'}
-        </button>
       </div>
     </div>
   );

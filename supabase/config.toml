@@ -1,0 +1,8 @@
+[functions.push-subscribe]
+verify_jwt = true
+
+[functions.push-test]
+verify_jwt = true
+
+[functions.notification-scheduler]
+verify_jwt = false
