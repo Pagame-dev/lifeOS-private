@@ -293,8 +293,73 @@ function AIPersonalisationSettings() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [newPref, setNewPref] = useState('');
+  const [apiKeyInput, setApiKeyInput] = useState('');
+  const [hasApiKey, setHasApiKey] = useState(false);
+  const [apiKeySaving, setApiKeySaving] = useState(false);
+  const [apiKeyError, setApiKeyError] = useState('');
+
+  async function fetchApiKeyStatus() {
+    const session = await supabase.auth.getSession();
+    const token = session.data.session?.access_token;
+    if (!token) return;
+    try {
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-api-key`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json() as { hasKey: boolean };
+        setHasApiKey(data.hasKey);
+      }
+    } catch { /* ignore */ }
+  }
+
+  async function saveApiKey() {
+    setApiKeySaving(true);
+    setApiKeyError('');
+    const session = await supabase.auth.getSession();
+    const token = session.data.session?.access_token;
+    if (!token) {
+      setApiKeyError('Not signed in.');
+      setApiKeySaving(false);
+      return;
+    }
+    try {
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-api-key`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ apiKey: apiKeyInput }),
+      });
+      if (res.ok) {
+        setHasApiKey(true);
+        setApiKeyInput('');
+      } else {
+        const data = await res.json().catch(() => ({ error: 'Failed to save' }));
+        setApiKeyError(data.error || 'Failed to save');
+      }
+    } catch {
+      setApiKeyError('Network error.');
+    }
+    setApiKeySaving(false);
+  }
+
+  async function deleteApiKey() {
+    setApiKeySaving(true);
+    setApiKeyError('');
+    const session = await supabase.auth.getSession();
+    const token = session.data.session?.access_token;
+    if (!token) { setApiKeySaving(false); return; }
+    try {
+      await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-api-key`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setHasApiKey(false);
+    } catch { /* ignore */ }
+    setApiKeySaving(false);
+  }
 
   useEffect(() => {
+    fetchApiKeyStatus();
     Promise.all([
       supabase.from('ai_memories').select('*').order('updated_at', { ascending: false }),
       supabase.from('voice_settings').select('*').maybeSingle(),
@@ -357,6 +422,41 @@ function AIPersonalisationSettings() {
   return (
     <div className="space-y-4">
       <h2 className="font-display text-xl text-cream">AI Personalisation & Voice</h2>
+
+      {/* OpenAI API key */}
+      <div className="glass-card p-5 space-y-4">
+        <div>
+          <h3 className="text-sm font-medium text-cream flex items-center gap-2"><Sparkles size={15} className="text-sage-300" /> OpenAI API Key</h3>
+          <p className="text-xs text-cream-dim/60 mt-1">The AI assistant needs an OpenAI API key to work. It's stored securely on the server and never exposed in the browser.</p>
+        </div>
+        {hasApiKey ? (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 text-sm text-sage-300">
+              <span className="w-2 h-2 rounded-full bg-sage-400" />
+              API key is set
+            </div>
+            <button onClick={deleteApiKey} disabled={apiKeySaving} className="w-full text-xs text-red-400/60 hover:text-red-400/80 py-2 transition-colors disabled:opacity-50">
+              {apiKeySaving ? 'Removing...' : 'Remove key'}
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <input
+              type="password"
+              value={apiKeyInput}
+              onChange={(e) => setApiKeyInput(e.target.value)}
+              placeholder="sk-..."
+              className="input-field text-sm"
+              autoComplete="off"
+            />
+            {apiKeyError && <p className="text-xs text-red-400/70">{apiKeyError}</p>}
+            <button onClick={saveApiKey} disabled={!apiKeyInput.trim() || apiKeySaving} className="w-full btn-primary py-2.5 disabled:opacity-50">
+              {apiKeySaving ? 'Saving...' : 'Save API key'}
+            </button>
+            <p className="text-[11px] text-cream-dim/50">Get a key at platform.openai.com/api-keys</p>
+          </div>
+        )}
+      </div>
 
       {/* Memory section */}
       <div className="glass-card p-5 space-y-4">
