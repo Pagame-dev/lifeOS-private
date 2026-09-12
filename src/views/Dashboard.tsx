@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Bell, Settings, Clock, ChevronRight, Sparkles, Moon, BookOpen, AlertCircle, CheckSquare, Plus, Mic, CalendarDays, CheckCircle2 } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
+import { localDateKey } from '@/lib/date-utils';
 import type { Holiday, TimetableEvent, Homework, TestExam, Task, Routine } from '@/lib/types';
 
 interface DashboardProps {
@@ -48,8 +49,7 @@ export function Dashboard({ onNavigate }: DashboardProps) {
       const dayOfWeek = now.getDay();
       const weekType = profile?.current_week_type || 'A';
 
-      const today = new Date();
-      const todayKey = today.toISOString().split('T')[0];
+      const todayKey = localDateKey();
       const [eventsRes, hwRes, testsRes, tasksRes, routinesRes, holidayRes] = await Promise.all([
         supabase
           .from('timetable_events')
@@ -115,7 +115,7 @@ export function Dashboard({ onNavigate }: DashboardProps) {
     r.applicable_days?.includes(now.getDay())
   );
 
-  const today = now.toISOString().split('T')[0];
+  const today = localDateKey(now);
   const dueThisWeek = homework.filter((h) => {
     const diff = new Date(h.due_date).getTime() - now.getTime();
     return diff >= 0 && diff <= 7 * 24 * 60 * 60 * 1000;

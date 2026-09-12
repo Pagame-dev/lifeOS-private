@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ChevronLeft, ChevronRight, Plus, X, Trash2, Dumbbell, BookOpen, Calendar, Clock, Repeat } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import { localDateKey } from '@/lib/date-utils';
 import type { Holiday, Subject, TimetableEvent, Workout, LogopedeSession, Homework, Task, ScheduleOverride, WorkoutRecurrence } from '@/lib/types';
 
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -31,7 +32,7 @@ type LogopedeSlot = { kind: 'logopede'; data: LogopedeSession; start_time: strin
 type Slot = EventSlot | WorkoutSlot | RecurringWorkoutSlot | LogopedeSlot;
 
 function dateKey(date: Date): string {
-  return date.toISOString().split('T')[0];
+  return localDateKey(date);
 }
 
 function startOfWeek(date: Date): Date {

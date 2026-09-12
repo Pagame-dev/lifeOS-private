@@ -1,4 +1,5 @@
 import { supabase } from '@/lib/supabase';
+import { localDateKey, addDaysLocal } from '@/lib/date-utils';
 
 export interface ScheduleNotificationParams {
   userId: string;
@@ -96,18 +97,15 @@ export function getNextDateForDayOfWeek(dayOfWeek: number, fromDate: Date = new 
   const currentDay = result.getDay();
   const diff = (dayOfWeek - currentDay + 7) % 7;
   result.setDate(result.getDate() + diff);
-  return result.toISOString().split('T')[0];
+  return localDateKey(result);
 }
 
 export function getTomorrowDate(): string {
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  tomorrow.setHours(0, 0, 0, 0);
-  return tomorrow.toISOString().split('T')[0];
+  return addDaysLocal(localDateKey(), 1);
 }
 
 export function getTodayDate(): string {
-  return new Date().toISOString().split('T')[0];
+  return localDateKey();
 }
 
 export { getUserTimezone };

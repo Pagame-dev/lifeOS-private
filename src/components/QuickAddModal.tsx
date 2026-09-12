@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { X, FileText, BookOpen, CalendarPlus, Dumbbell, Lightbulb, Target } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import { localDateKey } from '@/lib/date-utils';
 import { useAuth } from '@/lib/auth';
 
 interface QuickAddModalProps {
@@ -49,7 +50,7 @@ export function QuickAddModal({ onClose }: QuickAddModalProps) {
       } else if (selectedType === 'homework') {
         const { error: hwError } = await supabase.from('homework').insert({
           title: title.trim(),
-          due_date: dueDate || new Date().toISOString().split('T')[0],
+          due_date: dueDate || localDateKey(),
         });
         if (hwError) throw hwError;
       } else if (selectedType === 'note') {
@@ -61,7 +62,7 @@ export function QuickAddModal({ onClose }: QuickAddModalProps) {
       } else if (selectedType === 'workout') {
         const { error: workoutError } = await supabase.from('workouts').insert({
           title: title.trim(),
-          scheduled_date: dueDate || new Date().toISOString().split('T')[0],
+          scheduled_date: dueDate || localDateKey(),
         });
         if (workoutError) throw workoutError;
       } else if (selectedType === 'event') {

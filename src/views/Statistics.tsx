@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { TrendingUp, Moon, BookOpen, Dumbbell, Droplets, CheckCircle2, Flame, Award, Zap, Edit3, Trash2, X } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import { localDateKey } from '@/lib/date-utils';
 import type { DailyLog } from '@/lib/types';
 
 export function Statistics() {
@@ -16,7 +17,7 @@ export function Statistics() {
     const { data } = await supabase
       .from('daily_logs')
       .select('*')
-      .gte('log_date', startDate.toISOString().split('T')[0])
+      .gte('log_date', localDateKey(startDate))
       .order('log_date', { ascending: true });
     setLogs((data as DailyLog[]) || []);
     setLoading(false);

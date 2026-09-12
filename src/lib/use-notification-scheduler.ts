@@ -2,13 +2,10 @@ import { useEffect, useRef } from 'react';
 import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
 import { scheduleNotification, cancelNotificationsForEntity, getTodayDate, getTomorrowDate, getUserTimezone } from '@/lib/notification-jobs';
+import { localDateKey } from '@/lib/date-utils';
 import type { TimetableEvent, Homework, TestExam, Routine, Workout, ScheduleOverride, Holiday } from '@/lib/types';
 
 const LEAD_TIME_MIN = 5;
-
-function formatDateForQuery(date: Date): string {
-  return date.toISOString().split('T')[0];
-}
 
 function getTimezoneOffsetMinutes(): number {
   return -new Date().getTimezoneOffset();

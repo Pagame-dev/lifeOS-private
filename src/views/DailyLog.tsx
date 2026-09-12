@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Droplets, Moon, Dumbbell, BookOpen, Smile, Zap, Save, Check } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import { localDateKey } from '@/lib/date-utils';
 import type { DailyLog } from '@/lib/types';
 
 export function DailyLogView() {
@@ -9,7 +10,7 @@ export function DailyLogView() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
-  const todayKey = new Date().toISOString().split('T')[0];
+  const todayKey = localDateKey();
 
   useEffect(() => {
     async function loadLog() {

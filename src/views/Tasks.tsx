@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Check, Circle, Clock, AlertCircle, BookOpen, FileText, X, Plus, Trash2, Filter } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import { localDateKey } from '@/lib/date-utils';
 import type { Task, Homework, Subject } from '@/lib/types';
 
 type Tab = 'all' | 'tasks' | 'homework';
@@ -323,7 +324,7 @@ function TaskCreateModal({ type, subjects, onClose, onSaved }: { type: 'task' | 
       } else {
         const { error: insertError } = await supabase.from('homework').insert({
           title: title.trim(),
-          due_date: dueDate || new Date().toISOString().split('T')[0],
+          due_date: dueDate || localDateKey(),
           priority,
           subject_id: subjectId || null,
           topic: topic.trim(),

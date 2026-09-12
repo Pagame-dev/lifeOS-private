@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Dumbbell, Plus, X, Trash2, Check, SkipForward, Activity, Moon, Sun, Repeat, Edit3 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import { localDateKey } from '@/lib/date-utils';
 import type { Workout, LogopedeSession, WorkoutRecurrence } from '@/lib/types';
 
 type Tab = 'workouts' | 'logopede' | 'recurring';
@@ -69,7 +70,7 @@ function WorkoutsTab() {
 
   if (loading) return <div className="glass-card h-64 animate-pulse" />;
 
-  const now = new Date().toISOString().split('T')[0];
+  const now = localDateKey();
   const upcoming = workouts.filter((w) => w.scheduled_date >= now && w.status === 'planned');
   const completed = workouts.filter((w) => w.status === 'completed');
   const skipped = workouts.filter((w) => w.status === 'skipped');
@@ -293,7 +294,7 @@ function RecurringTab() {
 function WorkoutEditModal({ workout, onClose, onSaved }: { workout: Workout | null; onClose: () => void; onSaved: () => void }) {
   const [title, setTitle] = useState(workout?.title || '');
   const [workoutType, setWorkoutType] = useState(workout?.workout_type || '');
-  const [date, setDate] = useState(workout?.scheduled_date || new Date().toISOString().split('T')[0]);
+  const [date, setDate] = useState(workout?.scheduled_date || localDateKey());
   const [scheduledTime, setScheduledTime] = useState(workout?.scheduled_time || '');
   const [duration, setDuration] = useState(workout?.duration_min?.toString() || '');
   const [jefitLink, setJefitLink] = useState(workout?.jefit_link || '');
@@ -439,7 +440,7 @@ function LogopedeTab() {
   const [loading, setLoading] = useState(true);
 
   async function loadData() {
-    const today = new Date().toISOString().split('T')[0];
+    const today = localDateKey();
     const { data } = await supabase.from('logopede_sessions').select('*').gte('session_date', today).order('session_date', { ascending: false });
     setSessions((data as LogopedeSession[]) || []);
     setLoading(false);
@@ -460,7 +461,7 @@ function LogopedeTab() {
 
   if (loading) return <div className="glass-card h-64 animate-pulse" />;
 
-  const today = new Date().toISOString().split('T')[0];
+  const today = localDateKey();
   const todaySessions = sessions.filter((s) => s.session_date === today);
   const upcomingSessions = sessions.filter((s) => s.session_date > today);
 

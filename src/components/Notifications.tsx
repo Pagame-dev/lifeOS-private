@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { Bell, X, Clock, AlertCircle, Sparkles, CheckCircle2, ChevronRight } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import { localDateKey } from '@/lib/date-utils';
 import type { Notification, TimetableEvent, Homework, Task, TestExam, Workout } from '@/lib/types';
 
 interface NotificationPanelProps {
@@ -249,7 +250,7 @@ export function useSmartNotifications() {
       }
       lastGenRef.current = now;
 
-      const todayKey = now.toISOString().split('T')[0];
+      const todayKey = localDateKey();
       const dayOfWeek = now.getDay();
       const currentTime = now.toTimeString().slice(0, 5);
       const currentMinutes = now.getHours() * 60 + now.getMinutes();

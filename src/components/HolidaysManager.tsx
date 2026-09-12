@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Plus, Trash2, CalendarOff } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import { localDateKey } from '@/lib/date-utils';
 import type { Holiday } from '@/lib/types';
 
 export function HolidaysManager() {
@@ -39,7 +40,7 @@ export function HolidaysManager() {
 
   if (loading) return <div className="glass-card h-40 animate-pulse" />;
 
-  const today = new Date().toISOString().split('T')[0];
+  const today = localDateKey();
 
   return (
     <div className="space-y-4">
